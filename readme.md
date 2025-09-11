@@ -1,4 +1,4 @@
-# 🚀 ReplicOOP - Sistema Profissional de Replicação MySQL
+# 🚀 ReplicOOP - Sistema de Replicação MySQL
 
 Sistema avançado para replicação de estruturas e dados de banco de dados MySQL desenvolvido em Python.
 
