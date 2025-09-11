@@ -39,14 +39,14 @@ class ReplicationManager:
         
         self.logger.info("Sistema ReplicOOP inicializado")
     
-    def setup_databases(self, source_env: str = "production", 
-                       target_env: str = "sandbox") -> None:
+    def setup_databases(self, source_env: str = "sandbox", 
+                       target_env: str = "production") -> None:
         """
         Configura as conexões com bancos de dados de origem e destino
         
         Args:
-            source_env (str): Ambiente de origem
-            target_env (str): Ambiente de destino
+            source_env (str): Ambiente de origem (sandbox)
+            target_env (str): Ambiente de destino (production)
         """
         try:
             # Configuração do banco de origem
@@ -76,12 +76,12 @@ class ReplicationManager:
             self.logger.error(f"Erro ao configurar bancos de dados: {e}")
             raise ReplicationError(f"Falha na configuração: {e}")
     
-    def create_backup_before_replication(self, environment: str = "sandbox") -> str:
+    def create_backup_before_replication(self, environment: str = "production") -> str:
         """
         Cria backup do banco de destino antes da replicação
         
         Args:
-            environment (str): Ambiente do backup
+            environment (str): Ambiente do backup (destino)
             
         Returns:
             str: Caminho do arquivo de backup criado
@@ -114,12 +114,25 @@ class ReplicationManager:
             
             # Obtém tabelas para replicação
             if not tables:
+                # Se não especificado, usa apenas tabelas maintain (comportamento anterior)
                 tables = self.config_manager.get_maintain_tables()
+                self.logger.info(f"Tabelas maintain configuradas: {tables}")
                 if not tables:
                     tables = self.source_db.get_tables()
+                    self.logger.info(f"Usando todas as tabelas do banco de origem: {len(tables)} tabelas")
+            else:
+                self.logger.info(f"Usando tabelas especificadas: {len(tables) if isinstance(tables, list) else 'N/A'} tabelas")
             
             source_tables = self.source_db.get_tables()
             target_tables = self.target_db.get_tables()
+            
+            self.logger.info(f"Tabelas no banco de origem: {len(source_tables)}")
+            self.logger.info(f"Tabelas no banco de destino: {len(target_tables)}")
+            self.logger.info(f"Tabelas para processar: {len(tables) if tables else 0}")
+            
+            if not tables:
+                self.logger.error("Nenhuma tabela foi encontrada para processar!")
+                raise ReplicationError("Nenhuma tabela disponível para replicação")
             
             plan = {
                 'timestamp': datetime.now().isoformat(),
@@ -179,6 +192,9 @@ class ReplicationManager:
             
         except Exception as e:
             self.logger.error(f"Erro ao criar plano de replicação: {e}")
+            self.logger.error(f"Tipo do erro: {type(e).__name__}")
+            import traceback
+            self.logger.error(f"Traceback completo: {traceback.format_exc()}")
             raise ReplicationError(f"Falha no planejamento: {e}")
     
     def execute_replication(self, tables: Optional[List[str]] = None, 
@@ -206,6 +222,13 @@ class ReplicationManager:
                 backup_path = self.create_backup_before_replication()
             
             # Cria plano de replicação
+            # Se tables não foi especificado, replica TODAS as tabelas do banco de origem
+            if tables is None:
+                tables = self.source_db.get_tables()
+                self.logger.info(f"Replicando TODAS as tabelas do banco de origem: {len(tables)} tabelas")
+                # Ordena tabelas por dependências de Foreign Keys
+                tables = self._sort_tables_by_dependencies(tables)
+            
             plan = self.get_replication_plan(tables)
             
             if not plan['tables_to_replicate']:
@@ -247,20 +270,22 @@ class ReplicationManager:
                         # Cria tabela no destino
                         self.target_db.create_table_from_statement(create_statement)
                         
-                        # Se for tabela maintain E replicate_data=True, replica os dados
-                        if is_maintain_table and replicate_data:
+                        # Para tabelas maintain, SEMPRE replica os dados
+                        # Para tabelas não-maintain, replica apenas estrutura
+                        if is_maintain_table:
                             try:
                                 self._replicate_table_data(table_name)
                                 data_replicated_tables.append(table_name)
                                 replicated_tables.append(f"{table_name} (estrutura + dados)")
-                                self.logger.debug(f"Tabela {table_name} replicada com estrutura e dados")
+                                self.logger.debug(f"Tabela maintain {table_name} replicada com estrutura e dados")
                             except Exception as data_error:
                                 # Se falhar na replicação de dados, ainda marca como sucesso estrutural
                                 replicated_tables.append(f"{table_name} (apenas estrutura)")
                                 self.logger.warning(f"Estrutura de {table_name} criada, mas falhou na replicação dos dados: {data_error}")
                         else:
-                            replicated_tables.append(table_name)
-                            self.logger.debug(f"Tabela {table_name} replicada (apenas estrutura)")
+                            # Tabela não-maintain: apenas estrutura
+                            replicated_tables.append(f"{table_name} (apenas estrutura)")
+                            self.logger.debug(f"Tabela não-maintain {table_name} replicada (apenas estrutura)")
                         
                     except DatabaseOperationError as e:
                         # Se for erro relacionado a FK, tenta ignorar
@@ -302,6 +327,9 @@ class ReplicationManager:
                                 'error': str(e)
                             })
                             self.logger.error(f"Erro ao replicar {table_name}: {e}")
+                            self.logger.error(f"Tipo do erro: {type(e).__name__}")
+                            import traceback
+                            self.logger.error(f"Traceback: {traceback.format_exc()}")
                     
                     except Exception as e:
                         failed_tables.append({
@@ -309,6 +337,9 @@ class ReplicationManager:
                             'error': str(e)
                         })
                         self.logger.error(f"Erro inesperado ao replicar {table_name}: {e}")
+                        self.logger.error(f"Tipo do erro: {type(e).__name__}")
+                        import traceback
+                        self.logger.error(f"Traceback: {traceback.format_exc()}")
                     
                     finally:
                         pbar.update(1)
@@ -468,7 +499,11 @@ class ReplicationManager:
         try:
             self.logger.debug(f"Iniciando replicação de dados da tabela {table_name}")
             
-            # Conta total de registros
+            # LIMPA os dados da tabela destino para garantir dados idênticos
+            self.logger.debug(f"Limpando dados existentes da tabela {table_name} no destino")
+            self.target_db.execute_query(f"DELETE FROM `{table_name}`", fetch_results=False)
+            
+            # Conta total de registros na origem
             count_query = f"SELECT COUNT(*) as total FROM `{table_name}`"
             total_rows = self.source_db.execute_query(count_query)[0]['total']
             
@@ -553,3 +588,80 @@ class ReplicationManager:
                     differences.append(f"Campo '{field}' tem definição diferente")
         
         return differences
+    
+    def _sort_tables_by_dependencies(self, tables: List[str]) -> List[str]:
+        """
+        Ordena tabelas por dependências de Foreign Keys para evitar erros de criação
+        
+        Args:
+            tables (List[str]): Lista de tabelas para ordenar
+            
+        Returns:
+            List[str]: Tabelas ordenadas por dependência
+        """
+        try:
+            self.logger.debug("Analisando dependências de Foreign Keys...")
+            
+            # Mapa de dependências: tabela -> tabelas que ela depende
+            dependencies = {}
+            
+            # Analisa cada tabela para encontrar FKs
+            for table in tables:
+                dependencies[table] = []
+                try:
+                    # Obtém informações de FKs da tabela
+                    fk_query = """
+                        SELECT 
+                            REFERENCED_TABLE_NAME
+                        FROM 
+                            information_schema.KEY_COLUMN_USAGE 
+                        WHERE 
+                            TABLE_SCHEMA = DATABASE() 
+                            AND TABLE_NAME = %s
+                            AND REFERENCED_TABLE_NAME IS NOT NULL
+                    """
+                    fk_results = self.source_db.execute_query(fk_query, (table,))
+                    
+                    for fk_row in fk_results:
+                        referenced_table = fk_row.get('REFERENCED_TABLE_NAME')
+                        if referenced_table and referenced_table in tables and referenced_table != table:
+                            dependencies[table].append(referenced_table)
+                            
+                except Exception as e:
+                    self.logger.debug(f"Erro ao analisar FKs de {table}: {e}")
+            
+            # Ordenação topológica
+            ordered_tables = []
+            visited = set()
+            temp_visited = set()
+            
+            def visit(table):
+                if table in temp_visited:
+                    # Dependência circular - ignora e continua
+                    return
+                if table in visited:
+                    return
+                    
+                temp_visited.add(table)
+                
+                # Visita dependências primeiro
+                for dep_table in dependencies.get(table, []):
+                    if dep_table in tables:
+                        visit(dep_table)
+                
+                temp_visited.remove(table)
+                visited.add(table)
+                ordered_tables.append(table)
+            
+            # Processa todas as tabelas
+            for table in tables:
+                if table not in visited:
+                    visit(table)
+            
+            self.logger.info(f"Tabelas ordenadas por dependências: {len(ordered_tables)} tabelas")
+            return ordered_tables
+            
+        except Exception as e:
+            self.logger.warning(f"Erro ao ordenar tabelas por dependência: {e}")
+            # Se falhar, retorna ordem original
+            return tables

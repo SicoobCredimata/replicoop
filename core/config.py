@@ -109,3 +109,14 @@ class ConfigManager:
         logs_path = os.path.join(os.getcwd(), 'logs')
         os.makedirs(logs_path, exist_ok=True)
         return logs_path
+    
+    def get_available_environments(self) -> List[str]:
+        """
+        Obtém lista de ambientes disponíveis na configuração
+        
+        Returns:
+            List[str]: Lista de nomes dos ambientes configurados
+        """
+        environments = list(self._config.keys())
+        # Remove 'maintain' da lista se existir
+        return [env for env in environments if env != 'maintain']

@@ -3,26 +3,16 @@ setlocal EnableDelayedExpansion
 
 :: ========================================
 :: ReplicOOP - Gerenciador Principal
-:: Sistema de Replicação MySQL
+:: Sistema de Replicacao MySQL
 :: Autor: Marcus Geraldino
 :: ========================================
 
 title ReplicOOP Manager
 
-:: Cores para output
-set "RED=[91m"
-set "GREEN=[92m"  
-set "YELLOW=[93m"
-set "BLUE=[94m"
-set "MAGENTA=[95m"
-set "CYAN=[96m"
-set "WHITE=[97m"
-set "RESET=[0m"
-
-:: Verifica se Python está instalado
+:: Verifica se Python esta instalado
 python --version >nul 2>&1
 if !errorlevel! neq 0 (
-    echo %RED%❌ Python não encontrado! Instale o Python 3.7+ primeiro.%RESET%
+    echo ERRO: Python nao encontrado! Instale o Python 3.7+ primeiro.
     pause
     exit /b 1
 )
@@ -30,89 +20,83 @@ if !errorlevel! neq 0 (
 :: Menu Principal
 :main_menu
 cls
-echo %CYAN%
-echo ╔══════════════════════════════════════════════════════════════════╗
-echo ║                    🚀 ReplicOOP Manager v1.0.0                   ║
-echo ║              Sistema de Replicação de Estrutura MySQL           ║
-echo ╚══════════════════════════════════════════════════════════════════╝
-echo %RESET%
+echo ==============================================
+echo         ReplicOOP Manager v1.0.0
+echo     Sistema de Replicacao de Estrutura MySQL
+echo ==============================================
 echo.
-echo %WHITE%Escolha uma opção:%RESET%
+echo Escolha uma opcao:
 echo.
-echo %GREEN% [1]%RESET% - 📦 Instalar/Configurar Ambiente (venv + dependências)
-echo %GREEN% [2]%RESET% - 🚀 Executar ReplicOOP (menu interativo)
-echo %GREEN% [0]%RESET% - ❌ Sair
+echo [1] - Instalar/Configurar Ambiente (venv + dependencias)
+echo [2] - Executar ReplicOOP (menu interativo)
+echo [0] - Sair
 echo.
-set /p "choice=Digite sua escolha (0-2): "
+set /p escolha=Digite sua escolha (0-2): 
 
-if "%choice%"=="1" goto setup_environment
-if "%choice%"=="2" goto run_replicoop
-if "%choice%"=="0" goto exit_script
+if "%escolha%"=="1" goto setup_environment
+if "%escolha%"=="2" goto run_replicoop
+if "%escolha%"=="0" goto exit_script
 
-echo %RED%❌ Opção inválida! Tente novamente.%RESET%
-timeout /t 2 >nul
-goto main_menu
-
-echo %RED%❌ Opção inválida! Tente novamente.%RESET%
+echo ERRO: Opcao invalida! Tente novamente.
 timeout /t 2 >nul
 goto main_menu
 
 :: ========================================
-:: INSTALAÇÃO/CONFIGURAÇÃO DO AMBIENTE
+:: INSTALACAO/CONFIGURACAO DO AMBIENTE
 :: ========================================
 
 :setup_environment
 cls
-echo %CYAN%� Configuração do Ambiente Virtual%RESET%
+echo Configuracao do Ambiente Virtual
 echo.
 
-:: Verifica se já existe venv
+:: Verifica se ja existe venv
 if exist ".venv" (
-    echo %YELLOW%⚠️  Ambiente virtual já existe!%RESET%
+    echo AVISO: Ambiente virtual ja existe!
     echo.
-    echo %WHITE%Escolha uma opção:%RESET%
-    echo %GREEN% [1]%RESET% - Recriar ambiente (remove o atual)
-    echo %GREEN% [2]%RESET% - Manter ambiente atual
-    echo %GREEN% [0]%RESET% - Voltar ao menu principal
+    echo Escolha uma opcao:
+    echo [1] - Recriar ambiente (remove o atual)
+    echo [2] - Manter ambiente atual
+    echo [0] - Voltar ao menu principal
     echo.
     set /p "venv_choice=Digite sua escolha (0-2): "
     
     if "!venv_choice!"=="1" (
-        echo %YELLOW%🗑️  Removendo ambiente virtual atual...%RESET%
+        echo Removendo ambiente virtual atual...
         rmdir /s /q ".venv" 2>nul
         goto create_venv
     )
     if "!venv_choice!"=="2" goto install_deps
     if "!venv_choice!"=="0" goto main_menu
     
-    echo %RED%❌ Opção inválida!%RESET%
+    echo ERRO: Opcao invalida!
     timeout /t 2 >nul
     goto setup_environment
 )
 
 :create_venv
-echo %CYAN%� Criando ambiente virtual...%RESET%
+echo Criando ambiente virtual...
 python -m venv .venv
 
 if !errorlevel! neq 0 (
-    echo %RED%❌ Erro ao criar ambiente virtual!%RESET%
-    echo %YELLOW%Verifique se o módulo venv está instalado:%RESET%
-    echo %WHITE%python -m pip install virtualenv%RESET%
+    echo ERRO: Erro ao criar ambiente virtual!
+    echo Verifique se o modulo venv esta instalado:
+    echo python -m pip install virtualenv
     pause
     goto main_menu
 )
 
-echo %GREEN%✅ Ambiente virtual criado com sucesso!%RESET%
+echo Ambiente virtual criado com sucesso!
 
 :install_deps
 echo.
-echo %CYAN%📦 Instalando dependências...%RESET%
+echo Instalando dependencias...
 
-:: Ativa o ambiente virtual e instala dependências
+:: Ativa o ambiente virtual e instala dependencias
 call .venv\Scripts\activate.bat
 
 if not exist requirements.txt (
-    echo %RED%❌ Arquivo requirements.txt não encontrado!%RESET%
+    echo ERRO: Arquivo requirements.txt nao encontrado!
     pause
     goto main_menu
 )
@@ -121,60 +105,60 @@ pip install -r requirements.txt
 
 if !errorlevel! equ 0 (
     echo.
-    echo %GREEN%✅ Dependências instaladas com sucesso!%RESET%
+    echo Dependencias instaladas com sucesso!
     
-    :: Cria pastas necessárias
+    :: Cria pastas necessarias
     if not exist backups mkdir backups
     if not exist logs mkdir logs
     if not exist docs mkdir docs
     
-    echo %GREEN%✅ Estrutura de pastas criada%RESET%
+    echo Estrutura de pastas criada
     
-    :: Verifica configuração
+    :: Verifica configuracao
     if exist config.json (
-        echo %GREEN%✅ Arquivo de configuração encontrado%RESET%
+        echo Arquivo de configuracao encontrado
     ) else (
-        echo %YELLOW%⚠️  Arquivo config.json não encontrado%RESET%
-        echo %YELLOW%   Será necessário configurar antes do primeiro uso%RESET%
+        echo AVISO: Arquivo config.json nao encontrado
+        echo        Sera necessario configurar antes do primeiro uso
     )
     
     echo.
-    echo %GREEN%🎉 Ambiente configurado com sucesso!%RESET%
-    echo %YELLOW%💡 Use a opção [2] no menu para executar o ReplicOOP%RESET%
+    echo Ambiente configurado com sucesso!
+    echo Dica: Use a opcao [2] no menu para executar o ReplicOOP
     
 ) else (
-    echo %RED%❌ Erro ao instalar dependências%RESET%
-    echo %YELLOW%Verifique sua conexão com internet e tente novamente%RESET%
+    echo ERRO: Erro ao instalar dependencias
+    echo Verifique sua conexao com internet e tente novamente
 )
 
 call .venv\Scripts\deactivate.bat 2>nul
 echo.
-echo %WHITE%Pressione qualquer tecla para voltar ao menu...%RESET%
+echo Pressione qualquer tecla para voltar ao menu...
 pause >nul
 goto main_menu
 
 :: ========================================
-:: EXECUÇÃO DO REPLICOOP
+:: EXECUCAO DO REPLICOOP
 :: ========================================
 
 :run_replicoop
 cls
-echo %CYAN%🚀 Iniciando ReplicOOP%RESET%
+echo Iniciando ReplicOOP
 echo.
 
 :: Verifica se ambiente virtual existe
 if not exist ".venv" (
-    echo %RED%❌ Ambiente virtual não encontrado!%RESET%
-    echo %YELLOW%Execute a opção [1] primeiro para configurar o ambiente%RESET%
+    echo ERRO: Ambiente virtual nao encontrado!
+    echo Execute a opcao [1] primeiro para configurar o ambiente
     echo.
-    echo %WHITE%Pressione qualquer tecla para voltar ao menu...%RESET%
+    echo Pressione qualquer tecla para voltar ao menu...
     pause >nul
     goto main_menu
 )
 
 :: Verifica se main.py existe
 if not exist "main.py" (
-    echo %RED%❌ Arquivo main.py não encontrado!%RESET%
+    echo ERRO: Arquivo main.py nao encontrado!
     pause
     goto main_menu
 )
@@ -185,16 +169,16 @@ python main.py
 call .venv\Scripts\deactivate.bat 2>nul
 
 echo.
-echo %WHITE%Pressione qualquer tecla para voltar ao menu...%RESET%
+echo Pressione qualquer tecla para voltar ao menu...
 pause >nul
 goto main_menu
 
 :: ========================================
-:: SAÍDA
+:: SAIDA
 :: ========================================
 
 :exit_script
 cls
-echo %CYAN%� Obrigado por usar o ReplicOOP!%RESET%
+echo Obrigado por usar o ReplicOOP!
 echo.
 exit /b 0

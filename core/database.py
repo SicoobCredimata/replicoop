@@ -215,9 +215,47 @@ class DatabaseManager:
         Returns:
             List[str]: Lista com nomes das tabelas
         """
-        query = "SHOW TABLES"
-        results = self.execute_query(query)
-        return [table[0] for table in results] if results else []
+        try:
+            query = "SHOW TABLES"
+            results = self.execute_query(query)
+            
+            if not results:
+                return []
+            
+            # Trata diferentes formatos de resultado
+            tables = []
+            for row in results:
+                if isinstance(row, (list, tuple)) and len(row) > 0:
+                    # Formato tupla/lista: ('table_name',)
+                    tables.append(row[0])
+                elif isinstance(row, dict):
+                    # Formato dicionário: {'Tables_in_dbname': 'table_name'}
+                    # Pega o primeiro (e geralmente único) valor do dict
+                    table_name = list(row.values())[0]
+                    tables.append(table_name)
+                elif isinstance(row, str):
+                    # Formato string direta
+                    tables.append(row)
+                else:
+                    self.logger.warning(f"Formato inesperado na resposta SHOW TABLES: {type(row)} - {row}")
+            
+            self.logger.debug(f"Encontradas {len(tables)} tabelas: {tables}")
+            return tables
+            
+        except Exception as e:
+            self.logger.error(f"Erro ao obter lista de tabelas: {e}")
+            # Tenta método alternativo
+            try:
+                query = """
+                SELECT table_name 
+                FROM information_schema.tables 
+                WHERE table_schema = %s
+                """
+                results = self.execute_query(query, (self.config.dbname,))
+                return [table[0] for table in results] if results else []
+            except Exception as e2:
+                self.logger.error(f"Erro no método alternativo: {e2}")
+                return []
     
     def get_table_structure(self, table_name: str) -> List[Dict[str, Any]]:
         """
@@ -237,14 +275,19 @@ class DatabaseManager:
         
         columns = []
         for row in results:
-            columns.append({
-                'Field': row[0],
-                'Type': row[1],
-                'Null': row[2],
-                'Key': row[3],
-                'Default': row[4],
-                'Extra': row[5]
-            })
+            if isinstance(row, (list, tuple)) and len(row) >= 6:
+                # Formato tupla: (field, type, null, key, default, extra)
+                columns.append({
+                    'Field': row[0],
+                    'Type': row[1],
+                    'Null': row[2],
+                    'Key': row[3],
+                    'Default': row[4],
+                    'Extra': row[5]
+                })
+            elif isinstance(row, dict):
+                # Formato dict: {'Field': 'id', 'Type': 'int', ...}
+                columns.append(row)
         
         return columns
     
@@ -262,8 +305,26 @@ class DatabaseManager:
         results = self.execute_query(query)
         
         if results and len(results) > 0:
-            return results[0][1]
-        
+            row = results[0]
+            # Trata diferentes formatos de retorno
+            if isinstance(row, (list, tuple)) and len(row) > 1:
+                # Formato tupla: ('table_name', 'CREATE TABLE ...')
+                return row[1]
+            elif isinstance(row, dict):
+                # Formato dicionário: {'Table': 'table_name', 'Create Table': 'CREATE TABLE ...'}
+                create_key = None
+                for key in row.keys():
+                    if 'create' in key.lower() and 'table' in key.lower():
+                        create_key = key
+                        break
+                if create_key:
+                    return row[create_key]
+                else:
+                    # Se não encontrar, pega o segundo valor
+                    values = list(row.values())
+                    if len(values) > 1:
+                        return values[1]
+            
         raise DatabaseOperationError(f"Não foi possível obter CREATE TABLE para {table_name}")
     
     def get_foreign_keys(self, table_name: str) -> List[Dict[str, str]]:
@@ -330,14 +391,57 @@ class DatabaseManager:
     
     def drop_table_if_exists(self, table_name: str) -> None:
         """
-        Remove uma tabela se ela existir
+        Remove uma tabela se ela existir, desabilitando temporariamente as FKs na mesma conexão
         
         Args:
             table_name (str): Nome da tabela
         """
-        query = f"DROP TABLE IF EXISTS `{table_name}`"
-        self.execute_query(query, fetch_results=False)
-        self.logger.debug(f"Tabela {table_name} removida (se existia)")
+        try:
+            # Executa comandos na mesma conexão
+            commands = [
+                "SET FOREIGN_KEY_CHECKS = 0",
+                f"DROP TABLE IF EXISTS `{table_name}`",
+                "SET FOREIGN_KEY_CHECKS = 1"
+            ]
+            
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                for command in commands:
+                    try:
+                        cursor.execute(command)
+                        self.logger.debug(f"Executado: {command}")
+                    except Exception as cmd_error:
+                        self.logger.debug(f"Erro no comando '{command}': {cmd_error}")
+                        if "DROP TABLE" in command:
+                            # Se o DROP falhou, relança o erro
+                            raise
+                conn.commit()
+            
+            self.logger.debug(f"Tabela {table_name} removida (se existia)")
+            
+        except Exception as e:
+            self.logger.error(f"Erro ao remover tabela {table_name}: {e}")
+            raise
+    
+    def disable_foreign_key_checks(self) -> None:
+        """
+        Desabilita as verificações de foreign key para a sessão atual
+        """
+        try:
+            self.execute_query("SET FOREIGN_KEY_CHECKS = 0", fetch_results=False)
+            self.logger.debug("Foreign key checks desabilitados")
+        except Exception as e:
+            self.logger.warning(f"Erro ao desabilitar foreign key checks: {e}")
+    
+    def enable_foreign_key_checks(self) -> None:
+        """
+        Habilita as verificações de foreign key para a sessão atual
+        """
+        try:
+            self.execute_query("SET FOREIGN_KEY_CHECKS = 1", fetch_results=False)
+            self.logger.debug("Foreign key checks habilitados")
+        except Exception as e:
+            self.logger.warning(f"Erro ao habilitar foreign key checks: {e}")
     
     def create_table_from_statement(self, create_statement: str) -> None:
         """

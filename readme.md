@@ -2,28 +2,34 @@
 
 Sistema avançado para replicação de estruturas e dados de banco de dados MySQL desenvolvido em Python.
 
+## 📋 **Documentação Completa**
+
+📁 **[Ver Documentação Completa em docs/README.md](docs/README.md)**  
+🧪 **[Ver Testes em docs/tests/README.md](docs/tests/README.md)**
+
+---
+
 ## 🎯 Características Principais
 
-- **Replicação Inteligente**: Estrutura apenas ou estrutura + dados conforme configuração
-- **Backup Automático**: Cria backup antes de qualquer operação destrutiva
-- **Tratamento de Foreign Keys**: Sistema inteligente de fallback para problemas de FK
-- **Interface Menu**: Sistema menu-driven profissional e intuitivo
-- **Logs Detalhados**: Sistema completo de logging com cores e níveis
-- **Validação de Replicação**: Verificação automática da integridade pós-replicação
-- **Multi-Ambiente**: Suporte para Production, Staging, Development e Sandbox
-- **Compressão de Backup**: Backups automáticos com compressão gzip
+- **Replicação Inteligente**: Diferencia tabelas MAINTAIN (estrutura + dados) de não-MAINTAIN (apenas estrutura)
+- **Resolução de Dependências**: Análise automática e ordenação de Foreign Keys
+- **Backup Automático**: Backup comprimido antes de qualquer operação
+- **Sistema Robusto**: Tratamento completo de erros e recuperação
+- **Interface Amigável**: Menu interativo com logs coloridos
+- **Performance Otimizada**: 33 tabelas replicadas em ~9 segundos
+- **Multi-Ambiente**: Suporte completo para diferentes ambientes
 
-## 🔧 Funcionalidades Únicas
+## 🏗️ **Regras de Negócio**
 
-### Replicação Seletiva
-- **Tabelas Maintain**: Configuraveis via JSON, replicam estrutura + dados
-- **Demais Tabelas**: Apenas estrutura é replicada
-- **Flexibilidade Total**: Controle completo sobre o que replicar
+### **📊 Tabelas MAINTAIN**
+- Listadas em `config.json` → `maintain_tables`
+- **Comportamento**: Estrutura + Dados completos
+- **Uso**: Configurações, parâmetros, dados de referência
 
-### Sistema Inteligente de Foreign Keys
-- **Detecção Automática**: Identifica problemas de FK automaticamente
-- **Fallback Inteligente**: Remove FKs problematicas e continua replicação
-- **Log Detalhado**: Registra todos os problemas e soluções aplicadas
+### **🏗️ Tabelas NÃO-MAINTAIN**  
+- Todas as outras tabelas do banco
+- **Comportamento**: Apenas estrutura (CREATE TABLE)
+- **Uso**: Dados transacionais, logs, processamento
 
 ## 🚀 Instalação e Configuração
 

@@ -4,6 +4,7 @@ Módulo de backup do sistema ReplicOOP
 import os
 import subprocess
 import gzip
+import shutil
 from datetime import datetime
 from typing import Optional, List, Dict
 import json
@@ -36,6 +37,99 @@ class BackupManager:
         self.backup_path = backup_path
         os.makedirs(backup_path, exist_ok=True)
     
+    def _is_mysqldump_available(self) -> bool:
+        """Verifica se o mysqldump está disponível no sistema"""
+        try:
+            result = subprocess.run(['mysqldump', '--version'], 
+                                  capture_output=True, text=True, timeout=10)
+            return result.returncode == 0
+        except (subprocess.SubprocessError, FileNotFoundError, subprocess.TimeoutExpired):
+            return False
+    
+    def _create_python_backup(self, environment: str, backup_filepath: str) -> None:
+        """
+        Cria backup usando apenas Python (sem mysqldump)
+        
+        Args:
+            environment (str): Ambiente do banco
+            backup_filepath (str): Caminho do arquivo de backup
+        """
+        try:
+            with gzip.open(backup_filepath, 'wt', encoding='utf-8') as f:
+                # Cabeçalho do backup
+                f.write(f"-- Backup Python - {datetime.now().isoformat()}\n")
+                f.write(f"-- Banco: {self.db_manager.config.dbname}\n")
+                f.write(f"-- Ambiente: {environment}\n\n")
+                
+                f.write("SET FOREIGN_KEY_CHECKS = 0;\n")
+                f.write("SET AUTOCOMMIT = 0;\n")
+                f.write("START TRANSACTION;\n\n")
+                
+                # Obtém lista de tabelas
+                tables = self.db_manager.get_tables()
+                self.logger.info(f"Fazendo backup de {len(tables)} tabelas")
+                
+                # Usa o context manager corretamente
+                with self.db_manager.get_connection() as connection:
+                    cursor = connection.cursor()
+                    
+                    for table in tables:
+                        try:
+                            # Estrutura da tabela
+                            create_statement = self.db_manager.get_create_table_statement(table)
+                            f.write(f"-- Estrutura da tabela {table}\n")
+                            f.write(f"DROP TABLE IF EXISTS `{table}`;\n")
+                            f.write(f"{create_statement};\n\n")
+                            
+                            # Dados da tabela
+                            f.write(f"-- Dados da tabela {table}\n")
+                            
+                            cursor.execute(f"SELECT * FROM `{table}`")
+                            rows = cursor.fetchall()
+                            
+                            if rows:
+                                # Obtém nomes das colunas
+                                column_names = [desc[0] for desc in cursor.description]
+                                columns_str = "`,`".join(column_names)
+                                
+                                f.write(f"INSERT INTO `{table}` (`{columns_str}`) VALUES\n")
+                                
+                                for i, row in enumerate(rows):
+                                    # Formata valores para SQL
+                                    values = []
+                                    for value in row:
+                                        if value is None:
+                                            values.append('NULL')
+                                        elif isinstance(value, str):
+                                            # Escapa aspas simples e caracteres especiais
+                                            escaped = str(value).replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n").replace("\r", "\\r")
+                                            values.append(f"'{escaped}'")
+                                        elif isinstance(value, (int, float)):
+                                            values.append(str(value))
+                                        else:
+                                            # Para outros tipos (datetime, etc)
+                                            escaped = str(value).replace("\\", "\\\\").replace("'", "\\'")
+                                            values.append(f"'{escaped}'")
+                                    
+                                    values_str = ",".join(values)
+                                    separator = "," if i < len(rows) - 1 else ";"
+                                    f.write(f"({values_str}){separator}\n")
+                            
+                            f.write(f"\n")
+                            
+                        except Exception as e:
+                            self.logger.warning(f"Erro ao fazer backup da tabela {table}: {e}")
+                            f.write(f"-- ERRO na tabela {table}: {e}\n\n")
+                            continue
+                    
+                    cursor.close()
+                
+                f.write("COMMIT;\n")
+                f.write("SET FOREIGN_KEY_CHECKS = 1;\n")
+                
+        except Exception as e:
+            raise BackupError(f"Erro no backup Python: {e}")
+    
     def create_full_backup(self, environment: str = "production") -> str:
         """
         Cria um backup completo do banco de dados
@@ -53,44 +147,13 @@ class BackupManager:
         try:
             self.logger.info(f"Iniciando backup completo do banco {self.db_manager.config.dbname}")
             
-            # Comando mysqldump
-            mysqldump_cmd = [
-                "mysqldump",
-                f"--host={self.db_manager.config.host}",
-                f"--port={self.db_manager.config.port}",
-                f"--user={self.db_manager.config.username}",
-                f"--password={self.db_manager.config.password}",
-                "--single-transaction",
-                "--routines",
-                "--triggers",
-                "--events",
-                "--add-drop-table",
-                "--create-options",
-                "--disable-keys",
-                "--extended-insert",
-                "--quick",
-                "--lock-tables=false",
-                self.db_manager.config.dbname
-            ]
-            
-            # Executa mysqldump e comprime o resultado
-            self.logger.debug(f"Executando comando: {' '.join(mysqldump_cmd[:-1])} [senha omitida]")
-            
-            process = subprocess.Popen(
-                mysqldump_cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                universal_newlines=True
-            )
-            
-            # Comprime e salva o backup
-            with gzip.open(backup_filepath, 'wt', encoding='utf-8') as f:
-                stdout, stderr = process.communicate()
-                
-                if process.returncode != 0:
-                    raise BackupError(f"Erro no mysqldump: {stderr}")
-                
-                f.write(stdout)
+            # Verifica se mysqldump está disponível
+            if self._is_mysqldump_available():
+                self.logger.info("Usando mysqldump para backup")
+                self._create_mysqldump_backup(backup_filepath)
+            else:
+                self.logger.info("mysqldump não encontrado, usando backup Python")
+                self._create_python_backup(environment, backup_filepath)
             
             # Cria arquivo de metadados do backup
             self._create_backup_metadata(backup_filepath, environment)
@@ -100,12 +163,55 @@ class BackupManager:
             
             return backup_filepath
             
-        except subprocess.SubprocessError as e:
-            self.logger.error(f"Erro ao executar mysqldump: {e}")
-            raise BackupError(f"Falha no comando mysqldump: {e}")
         except Exception as e:
             self.logger.error(f"Erro durante backup: {e}")
             raise BackupError(f"Falha no backup: {e}")
+    
+    def _create_mysqldump_backup(self, backup_filepath: str) -> None:
+        """
+        Cria backup usando mysqldump
+        
+        Args:
+            backup_filepath (str): Caminho do arquivo de backup
+        """
+        # Comando mysqldump
+        mysqldump_cmd = [
+            "mysqldump",
+            f"--host={self.db_manager.config.host}",
+            f"--port={self.db_manager.config.port}",
+            f"--user={self.db_manager.config.username}",
+            f"--password={self.db_manager.config.password}",
+            "--single-transaction",
+            "--routines",
+            "--triggers",
+            "--events",
+            "--add-drop-table",
+            "--create-options",
+            "--disable-keys",
+            "--extended-insert",
+            "--quick",
+            "--lock-tables=false",
+            self.db_manager.config.dbname
+        ]
+        
+        # Executa mysqldump e comprime o resultado
+        self.logger.debug(f"Executando comando mysqldump")
+        
+        process = subprocess.Popen(
+            mysqldump_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            universal_newlines=True
+        )
+        
+        # Comprime e salva o backup
+        with gzip.open(backup_filepath, 'wt', encoding='utf-8') as f:
+            stdout, stderr = process.communicate()
+            
+            if process.returncode != 0:
+                raise BackupError(f"Erro no mysqldump: {stderr}")
+            
+            f.write(stdout)
     
     def create_structure_backup(self, tables: Optional[List[str]] = None, 
                               environment: str = "production") -> str:

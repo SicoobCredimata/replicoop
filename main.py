@@ -151,7 +151,8 @@ class ReplicOOPMenu:
     
     def select_environments(self) -> tuple:
         """Seleciona ambientes de origem e destino"""
-        environments = ["production", "staging", "development", "sandbox"]
+        config_manager = ConfigManager(self.config_path)
+        environments = config_manager.get_available_environments()
         
         print("\n🔧 SELEÇÃO DE AMBIENTES")
         print("-" * 30)
@@ -330,7 +331,8 @@ class ReplicOOPMenu:
         if not self.initialize_manager():
             return
         
-        environments = ["production", "staging", "development", "sandbox"]
+        config_manager = ConfigManager(self.config_path)
+        environments = config_manager.get_available_environments()
         print("\n📤 Selecione o ambiente para backup:")
         for i, env in enumerate(environments, 1):
             print(f"  [{i}] - {env.capitalize()}")
@@ -393,7 +395,8 @@ class ReplicOOPMenu:
             
             from core.database import DatabaseManager
             
-            environments = ["production", "staging", "development", "sandbox"]
+            config_manager = ConfigManager(self.config_path)
+            environments = config_manager.get_available_environments()
             results = {}
             
             print("\n🧪 Testando conexões com todos os ambientes...\n")
@@ -670,7 +673,7 @@ class ReplicOOPMenu:
             print(f"   Arquivo: {self.config_path}")
             
             # Mostra ambientes configurados
-            environments = ["production", "staging", "development", "sandbox"]
+            environments = config_manager.get_available_environments()
             print(f"\n🗄️  AMBIENTES CONFIGURADOS:")
             
             for env in environments:
