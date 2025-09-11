@@ -1,0 +1,43 @@
+{
+    "production": {
+        "host": "localhost",
+        "port": 3306,
+        "username": "user_prod",
+        "password": "senha_segura_prod", 
+        "dbname": "banco_producao",
+        "charset": "utf8mb4"
+    },
+    "staging": {
+        "host": "localhost",
+        "port": 3306,
+        "username": "user_stage",
+        "password": "senha_segura_stage",
+        "dbname": "banco_staging", 
+        "charset": "utf8mb4"
+    },
+    "development": {
+        "host": "localhost",
+        "port": 3306,
+        "username": "user_dev",
+        "password": "senha_dev",
+        "dbname": "banco_desenvolvimento", 
+        "charset": "utf8mb4"
+    },
+    "sandbox": {
+        "host": "localhost",
+        "port": 3306,
+        "username": "user_test",
+        "password": "senha_test",
+        "dbname": "banco_teste", 
+        "charset": "utf8mb4"
+    },
+    "maintain": [
+        "usuarios",
+        "produtos",
+        "categorias",
+        "configuracoes",
+        "parametros_sistema",
+        "tipos_documento",
+        "status_pedido"
+    ]
+}
