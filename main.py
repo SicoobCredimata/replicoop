@@ -24,6 +24,7 @@ try:
     from core.replication import ReplicationManager, ReplicationError
     from core.logger import LoggerManager
     from core.config import ConfigManager
+    from core.restore import RestoreManager, RestoreError
 except ImportError as e:
     print(f"❌ Erro ao importar módulos: {e}")
     print("💡 Verifique se as dependências estão instaladas:")
@@ -72,6 +73,7 @@ class ReplicOOPMenu:
     def __init__(self):
         """Inicializa o menu"""
         self.replication_manager = None
+        self.restore_manager = None
         self.logger = LoggerManager()
         self.config_path = "config.json"
         
@@ -99,14 +101,19 @@ class ReplicOOPMenu:
         print("  [4] - Criar Backup Manual")
         print("  [5] - Listar Backups Disponíveis")
         print()
-        print("🔧 CONFIGURAÇÕES E TESTES:")
-        print("  [6] - Testar Conexões")
-        print("  [7] - Ver Plano de Replicação")
-        print("  [8] - Configurar Sistema")
+        print("� OPERAÇÕES DE RESTAURAÇÃO:")
+        print("  [6] - Restaurar Backup (Avançado)")
+        print("  [7] - Analisar Backup")
+        print("  [8] - Comparar Backup com Estado Atual")
+        print()
+        print("�🔧 CONFIGURAÇÕES E TESTES:")
+        print("  [9] - Testar Conexões")
+        print("  [10] - Ver Plano de Replicação")
+        print("  [11] - Configurar Sistema")
         print()
         print("📊 RELATÓRIOS E LOGS:")
-        print("  [9] - Ver Logs")
-        print("  [10] - Estatísticas do Sistema")
+        print("  [12] - Ver Logs")
+        print("  [13] - Estatísticas do Sistema")
         print()
         print("  [0] - ❌ Sair")
         print("-" * 50)
@@ -116,7 +123,7 @@ class ReplicOOPMenu:
         print("\n" + "="*70)
         input("📌 Pressione Enter para continuar...")
     
-    def get_user_choice(self, min_val: int = 0, max_val: int = 10) -> int:
+    def get_user_choice(self, min_val: int = 0, max_val: int = 13) -> int:
         """Obtém escolha do usuário"""
         while True:
             try:
@@ -136,7 +143,7 @@ class ReplicOOPMenu:
                 sys.exit(0)
     
     def initialize_manager(self) -> bool:
-        """Inicializa o gerenciador de replicação"""
+        """Inicializa os gerenciadores do sistema"""
         try:
             if not os.path.exists(self.config_path):
                 print(f"❌ Arquivo de configuração não encontrado: {self.config_path}")
@@ -144,6 +151,18 @@ class ReplicOOPMenu:
                 return False
             
             self.replication_manager = ReplicationManager(self.config_path)
+            
+            # Setup básico dos bancos para ter os managers disponíveis
+            self.replication_manager.setup_databases("sandbox", "production")
+            
+            # Inicializa o RestoreManager
+            if hasattr(self.replication_manager, 'backup_manager') and self.replication_manager.target_db:
+                self.restore_manager = RestoreManager(
+                    db_manager=self.replication_manager.target_db,
+                    backup_manager=self.replication_manager.backup_manager,
+                    logger=self.replication_manager.logger
+                )
+            
             return True
         except Exception as e:
             print(f"❌ Erro ao inicializar sistema: {e}")
@@ -744,6 +763,284 @@ class ReplicOOPMenu:
         except Exception as e:
             print(f"❌ Erro ao criar arquivo: {e}")
     
+    def option_restore_backup(self):
+        """Opção para restaurar backup"""
+        if not self.initialize_manager():
+            return
+        
+        if not self.restore_manager:
+            print("❌ Gerenciador de restauração não inicializado")
+            return
+        
+        try:
+            print("\n🔙 RESTAURAÇÃO AVANÇADA DE BACKUP")
+            print("="*50)
+            
+            # Lista backups disponíveis
+            backups = self.restore_manager.list_available_backups()
+            
+            if not backups:
+                print("❌ Nenhum backup disponível para restauração")
+                return
+            
+            print(f"\n📋 Backups Disponíveis ({len(backups)}):")
+            print("-" * 70)
+            
+            for i, backup in enumerate(backups, 1):
+                recommended = "⭐ " if backup.get('recommended') else "   "
+                print(f"{recommended}[{i:2}] {backup['backup_file']}")
+                print(f"      📅 {backup.get('age_description', 'N/A')} | 💾 {backup.get('size_formatted', 'N/A')}")
+                print(f"      🗂️  {backup.get('backup_type', 'N/A').title()} | 🏷️  {backup.get('environment', 'N/A')}")
+                print()
+            
+            # Seleção do backup
+            choice = self.get_user_choice(1, len(backups))
+            selected_backup = backups[choice - 1]
+            backup_path = selected_backup['backup_path']
+            
+            print(f"\n✅ Backup selecionado: {selected_backup['backup_file']}")
+            
+            # Opções de restauração
+            print("\n⚙️ OPÇÕES DE RESTAURAÇÃO:")
+            print("  [1] - Restauração Rápida (sem validações)")
+            print("  [2] - Restauração Segura (com backup de segurança)")
+            print("  [3] - Simulação (dry-run)")
+            print("  [4] - Análise detalhada primeiro")
+            
+            restore_choice = self.get_user_choice(1, 4)
+            
+            if restore_choice == 4:
+                # Análise primeiro
+                self._show_backup_analysis(backup_path)
+                
+                confirm = input("\nContinuar com a restauração? (s/N): ").lower().strip()
+                if confirm != 's':
+                    return
+                
+                restore_choice = 2  # Mudanças para segura após análise
+            
+            # Configurações baseadas na escolha
+            if restore_choice == 1:
+                # Rápida
+                safety_backup = False
+                validate = False
+                force = True
+                dry_run = False
+            elif restore_choice == 2:
+                # Segura
+                safety_backup = True
+                validate = True
+                force = False
+                dry_run = False
+            else:  # 3 - Simulação
+                safety_backup = False
+                validate = True
+                force = False
+                dry_run = True
+            
+            # Confirmação final
+            if not dry_run:
+                print(f"\n⚠️  ATENÇÃO: Esta operação irá {'substituir' if restore_choice == 1 else 'restaurar'} o banco de dados atual!")
+                print(f"📂 Banco alvo: {self.replication_manager.db_manager_target.config.dbname}")
+                
+                if restore_choice == 2:
+                    print("💾 Backup de segurança será criado antes da restauração")
+                
+                confirm = input("\nConfirma a restauração? (CONFIRMO/N): ").strip()
+                if confirm != "CONFIRMO":
+                    print("❌ Restauração cancelada")
+                    return
+            
+            # Executa restauração
+            print(f"\n🔄 Iniciando {'simulação de' if dry_run else ''} restauração...")
+            
+            result = self.restore_manager.restore_backup_advanced(
+                backup_filepath=backup_path,
+                create_safety_backup=safety_backup,
+                validate_before_restore=validate,
+                force_restore=force,
+                dry_run=dry_run
+            )
+            
+            # Mostra resultados
+            print(f"\n{'🎯 SIMULAÇÃO' if dry_run else '✅ RESTAURAÇÃO'} CONCLUÍDA!")
+            print("-" * 50)
+            print(f"📁 Arquivo: {result['backup_file']}")
+            print(f"⏱️  Duração: {result['restore_duration']:.2f} segundos")
+            print(f"📊 Tabelas: {result['tables_restored']}")
+            
+            if not dry_run:
+                print(f"📝 Registros: {result.get('records_restored', 'N/A')}")
+                
+                if result.get('safety_backup_created'):
+                    print(f"💾 Backup segurança: {os.path.basename(result['safety_backup_created'])}")
+            
+            if result.get('warnings'):
+                print(f"\n⚠️  Avisos ({len(result['warnings'])}):")
+                for warning in result['warnings']:
+                    print(f"   • {warning}")
+            
+            if dry_run:
+                print("\n💡 Esta foi apenas uma simulação. Use opção 1 ou 2 para restauração real.")
+            
+        except RestoreError as e:
+            print(f"❌ Erro na restauração: {e}")
+        except Exception as e:
+            print(f"❌ Erro inesperado: {e}")
+    
+    def option_analyze_backup(self):
+        """Opção para analisar backup"""
+        if not self.initialize_manager():
+            return
+        
+        if not self.restore_manager:
+            print("❌ Gerenciador de restauração não inicializado")
+            return
+        
+        try:
+            print("\n🔍 ANÁLISE DE BACKUP")
+            print("="*40)
+            
+            # Lista backups disponíveis
+            backups = self.restore_manager.list_available_backups()
+            
+            if not backups:
+                print("❌ Nenhum backup disponível para análise")
+                return
+            
+            print(f"\n📋 Selecione o backup para análise:")
+            for i, backup in enumerate(backups, 1):
+                print(f"  [{i}] {backup['backup_file']} ({backup.get('size_formatted', 'N/A')})")
+            
+            choice = self.get_user_choice(1, len(backups))
+            selected_backup = backups[choice - 1]
+            
+            self._show_backup_analysis(selected_backup['backup_path'])
+            
+        except Exception as e:
+            print(f"❌ Erro na análise: {e}")
+    
+    def option_compare_backup(self):
+        """Opção para comparar backup com estado atual"""
+        if not self.initialize_manager():
+            return
+        
+        if not self.restore_manager:
+            print("❌ Gerenciador de restauração não inicializado")
+            return
+        
+        try:
+            print("\n⚖️  COMPARAÇÃO: BACKUP vs ESTADO ATUAL")
+            print("="*50)
+            
+            # Lista backups disponíveis
+            backups = self.restore_manager.list_available_backups()
+            
+            if not backups:
+                print("❌ Nenhum backup disponível para comparação")
+                return
+            
+            print(f"\n📋 Selecione o backup para comparação:")
+            for i, backup in enumerate(backups, 1):
+                print(f"  [{i}] {backup['backup_file']}")
+            
+            choice = self.get_user_choice(1, len(backups))
+            selected_backup = backups[choice - 1]
+            
+            print(f"\n🔄 Analisando diferenças...")
+            comparison = self.restore_manager.compare_backup_with_current(selected_backup['backup_path'])
+            
+            print(f"\n📊 RESULTADO DA COMPARAÇÃO")
+            print("-" * 40)
+            print(f"📁 Backup: {comparison['backup_file']}")
+            print(f"📋 Tabelas no backup: {comparison['backup_tables_count']}")
+            print(f"📋 Tabelas atuais: {comparison['current_tables_count']}")
+            
+            if comparison['tables_only_in_backup']:
+                print(f"\n➕ Tabelas APENAS no backup ({len(comparison['tables_only_in_backup'])}):")
+                for table in comparison['tables_only_in_backup']:
+                    print(f"   • {table}")
+            
+            if comparison['tables_only_in_current']:
+                print(f"\n➖ Tabelas APENAS no estado atual ({len(comparison['tables_only_in_current'])}):")
+                for table in comparison['tables_only_in_current']:
+                    print(f"   • {table}")
+            
+            if comparison['tables_in_both']:
+                print(f"\n✅ Tabelas em AMBOS ({len(comparison['tables_in_both'])}):")
+                # Mostra apenas algumas para não poluir a tela
+                shown = comparison['tables_in_both'][:10]
+                for table in shown:
+                    print(f"   • {table}")
+                
+                if len(comparison['tables_in_both']) > 10:
+                    print(f"   ... e mais {len(comparison['tables_in_both']) - 10} tabelas")
+            
+            print(f"\n💡 RECOMENDAÇÕES:")
+            if comparison['recommendations']:
+                for rec in comparison['recommendations']:
+                    print(f"   • {rec}")
+            else:
+                print("   • Nenhuma recomendação específica")
+            
+        except Exception as e:
+            print(f"❌ Erro na comparação: {e}")
+    
+    def _show_backup_analysis(self, backup_path: str):
+        """Mostra análise detalhada de um backup"""
+        try:
+            print(f"\n🔍 Analisando backup...")
+            analysis = self.restore_manager.analyze_backup(backup_path)
+            
+            print(f"\n📊 ANÁLISE DETALHADA")
+            print("-" * 40)
+            print(f"📁 Arquivo: {analysis['file_name']}")
+            print(f"💾 Tamanho: {analysis['file_size']:,} bytes")
+            print(f"📦 Comprimido: {'Sim' if analysis['is_compressed'] else 'Não'}")
+            print(f"🗂️  Tabelas: {analysis['table_count']}")
+            print(f"📝 Registros (estimativa): {analysis['estimated_records']:,}")
+            
+            if analysis.get('database_name'):
+                print(f"🏷️  Banco origem: {analysis['database_name']}")
+            
+            if analysis.get('backup_date'):
+                print(f"📅 Data backup: {analysis['backup_date']}")
+            
+            print(f"🔗 Foreign Keys: {'Sim' if analysis['has_foreign_keys'] else 'Não'}")
+            print(f"⚡ Triggers: {'Sim' if analysis['has_triggers'] else 'Não'}")
+            
+            if analysis['tables_found']:
+                print(f"\n📋 TABELAS ENCONTRADAS ({len(analysis['tables_found'])}):")
+                # Mostra primeiras 15 tabelas
+                shown_tables = analysis['tables_found'][:15]
+                for i, table in enumerate(shown_tables, 1):
+                    print(f"  {i:2}. {table}")
+                
+                if len(analysis['tables_found']) > 15:
+                    remaining = len(analysis['tables_found']) - 15
+                    print(f"  ... e mais {remaining} tabelas")
+            
+            # Validação de compatibilidade
+            print(f"\n🔍 Validando compatibilidade...")
+            validation = self.restore_manager.validate_backup_compatibility(backup_path)
+            
+            print(f"\n✅ COMPATIBILIDADE")
+            print("-" * 20)
+            print(f"Status: {'✅ Compatível' if validation['compatible'] else '❌ Incompatível'}")
+            
+            if validation['warnings']:
+                print(f"\n⚠️  AVISOS ({len(validation['warnings'])}):")
+                for warning in validation['warnings']:
+                    print(f"   • {warning}")
+            
+            if validation['errors']:
+                print(f"\n❌ ERROS ({len(validation['errors'])}):")
+                for error in validation['errors']:
+                    print(f"   • {error}")
+            
+        except Exception as e:
+            print(f"❌ Erro na análise: {e}")
+    
     def run(self):
         """Executa o menu principal"""
         while True:
@@ -752,7 +1049,7 @@ class ReplicOOPMenu:
                 self.print_header()
                 self.print_main_menu()
                 
-                choice = self.get_user_choice(0, 10)
+                choice = self.get_user_choice(0, 13)
                 
                 if choice == 0:
                     print("\n👋 Obrigado por usar o ReplicOOP!")
@@ -768,14 +1065,20 @@ class ReplicOOPMenu:
                 elif choice == 5:
                     self.option_list_backups()
                 elif choice == 6:
-                    self.option_test_connections()
+                    self.option_restore_backup()
                 elif choice == 7:
-                    self.option_show_plan()
+                    self.option_analyze_backup()
                 elif choice == 8:
-                    self.option_configure()
+                    self.option_compare_backup()
                 elif choice == 9:
-                    self.option_view_logs()
+                    self.option_test_connections()
                 elif choice == 10:
+                    self.option_show_plan()
+                elif choice == 11:
+                    self.option_configure()
+                elif choice == 12:
+                    self.option_view_logs()
+                elif choice == 13:
                     self.option_statistics()
                 
                 if choice != 0:

@@ -2,7 +2,37 @@
 
 ## 🎯 **Visão Geral**
 
-O **ReplicOOP** é um sistema de replicação de estrutura de banco de dados MySQL desenvolvido para sincronizar tabelas entre diferentes ambientes (sandbox, production, etc.) de forma inteligente e segura.
+O **ReplicOOP** é um sistema completo de replicação e gerenciamento de banco de dados MySQL desenvolvido para sincronizar tabelas entre diferentes ambientes (sandbox, production, etc.) de forma inteligente e segura. O sistema inclui funcionalidades avançadas de backup, restauração e análise.
+
+---
+
+## 🌟 **Principais Funcionalidades**
+
+### 🔄 **Sistema de Replicação Inteligente**
+- ✅ Replicação diferenciada por tipo de tabela
+- ✅ Resolução automática de dependências (Foreign Keys)
+- ✅ Backup automático antes de operações
+- ✅ Validação completa de integridade
+
+### 💾 **Sistema de Backup Avançado**
+- ✅ Backup completo com compressão automática
+- ✅ Backup de estrutura apenas
+- ✅ Metadados detalhados para cada backup
+- ✅ Limpeza automática de backups antigos
+
+### 🔙 **Sistema de Restauração Profissional** ⭐ **NOVO!**
+- ✅ Análise inteligente de backups
+- ✅ Validação de compatibilidade
+- ✅ Restauração com backup de segurança
+- ✅ Modo de simulação (dry-run)
+- ✅ Comparação backup vs estado atual
+- ✅ Rollback automático em caso de erro
+
+### 📊 **Interface Profissional**
+- ✅ Menu interativo intuitivo
+- ✅ Logs detalhados e organizados
+- ✅ Validações de segurança
+- ✅ Relatórios completos
 
 ---
 
@@ -14,12 +44,15 @@ O **ReplicOOP** é um sistema de replicação de estrutura de banco de dados MyS
 replicoop/
 ├── core/                    # Módulos principais
 │   ├── backup.py           # Sistema de backup
+│   ├── restore.py          # Sistema de restauração ⭐ NOVO!
 │   ├── config.py           # Gerenciamento de configurações
 │   ├── database.py         # Conexões e operações MySQL
 │   ├── logger.py           # Sistema de logs
 │   ├── replication.py      # Motor de replicação
 │   └── utils.py            # Utilitários gerais
 ├── docs/                   # Documentação
+│   ├── restore.md          # Documentação de restauração ⭐ NOVO!
+│   └── tests/              # Testes do sistema
 ├── logs/                   # Arquivos de log
 ├── backups/                # Backups automáticos
 ├── config.json             # Configurações do sistema
@@ -131,6 +164,35 @@ graph TD
     Q --> R[Log de Resultados]
     R --> S[Fim]
 ```
+
+---
+
+---
+
+## 🎮 **Menu Principal - Opções Disponíveis**
+
+### **🔄 OPERAÇÕES DE REPLICAÇÃO:**
+- **[1] - Replicar Estruturas (com opções)**: Replicação personalizada com seleção de tabelas
+- **[2] - Replicar Tudo**: Replicação completa (estrutura + dados das tabelas maintain)
+- **[3] - Validar Replicação**: Verifica integridade após replicação
+
+### **💾 OPERAÇÕES DE BACKUP:**
+- **[4] - Criar Backup Manual**: Backup completo do banco de destino
+- **[5] - Listar Backups Disponíveis**: Mostra todos os backups com detalhes
+
+### **🔙 OPERAÇÕES DE RESTAURAÇÃO:** ⭐ **NOVO!**
+- **[6] - Restaurar Backup (Avançado)**: Sistema completo de restauração com múltiplas opções
+- **[7] - Analisar Backup**: Análise detalhada do conteúdo de backups
+- **[8] - Comparar Backup com Estado Atual**: Comparação entre backup e banco atual
+
+### **🔧 CONFIGURAÇÕES E TESTES:**
+- **[9] - Testar Conexões**: Valida conectividade com bancos de dados
+- **[10] - Ver Plano de Replicação**: Mostra ordenação de tabelas e dependências
+- **[11] - Configurar Sistema**: Assistente de configuração
+
+### **📊 RELATÓRIOS E LOGS:**
+- **[12] - Ver Logs**: Visualiza logs recentes do sistema
+- **[13] - Estatísticas do Sistema**: Relatórios de desempenho e estatísticas
 
 ---
 
