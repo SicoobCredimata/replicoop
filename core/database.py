@@ -257,6 +257,51 @@ class DatabaseManager:
                 self.logger.error(f"Erro no método alternativo: {e2}")
                 return []
     
+    def table_exists(self, table_name: str) -> bool:
+        """
+        Verifica se uma tabela existe no banco de dados
+        
+        Args:
+            table_name (str): Nome da tabela
+            
+        Returns:
+            bool: True se a tabela existe, False caso contrário
+        """
+        try:
+            query = """
+            SELECT COUNT(*)
+            FROM information_schema.tables 
+            WHERE table_schema = %s AND table_name = %s
+            """
+            results = self.execute_query(query, (self.config.dbname, table_name))
+            
+            if results and len(results) > 0:
+                count = results[0]
+                # Trata diferentes formatos de resultado
+                if isinstance(count, (list, tuple)):
+                    exists = count[0] > 0
+                elif isinstance(count, dict):
+                    exists = list(count.values())[0] > 0
+                else:
+                    exists = count > 0
+                
+                self.logger.debug(f"Tabela '{table_name}' {'existe' if exists else 'não existe'}")
+                return exists
+            
+            return False
+            
+        except Exception as e:
+            self.logger.warning(f"Erro ao verificar existência da tabela {table_name}: {e}")
+            # Método alternativo: tenta listar tabelas
+            try:
+                tables = self.get_tables()
+                exists = table_name in tables
+                self.logger.debug(f"Verificação alternativa: tabela '{table_name}' {'existe' if exists else 'não existe'}")
+                return exists
+            except Exception as e2:
+                self.logger.error(f"Erro no método alternativo de verificação: {e2}")
+                return False
+    
     def get_table_structure(self, table_name: str) -> List[Dict[str, Any]]:
         """
         Obtém estrutura de uma tabela específica

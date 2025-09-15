@@ -264,15 +264,17 @@ class ReplicationManager:
                         # Obtém estrutura da tabela de origem
                         create_statement = self.source_db.get_create_table_statement(table_name)
                         
-                        # Remove tabela no destino se existir
-                        self.target_db.drop_table_if_exists(table_name)
-                        
-                        # Cria tabela no destino
-                        self.target_db.create_table_from_statement(create_statement)
-                        
-                        # Para tabelas maintain, SEMPRE replica os dados
-                        # Para tabelas não-maintain, replica apenas estrutura
                         if is_maintain_table:
+                            # TABELAS MAINTAIN: Remove completamente e recria com dados de origem
+                            self.logger.debug(f"Tabela MAINTAIN {table_name}: replicando estrutura + dados")
+                            
+                            # Remove tabela no destino se existir
+                            self.target_db.drop_table_if_exists(table_name)
+                            
+                            # Cria tabela no destino
+                            self.target_db.create_table_from_statement(create_statement)
+                            
+                            # Replica os dados de origem
                             try:
                                 self._replicate_table_data(table_name)
                                 data_replicated_tables.append(table_name)
@@ -282,10 +284,24 @@ class ReplicationManager:
                                 # Se falhar na replicação de dados, ainda marca como sucesso estrutural
                                 replicated_tables.append(f"{table_name} (apenas estrutura)")
                                 self.logger.warning(f"Estrutura de {table_name} criada, mas falhou na replicação dos dados: {data_error}")
+                        
                         else:
-                            # Tabela não-maintain: apenas estrutura
-                            replicated_tables.append(f"{table_name} (apenas estrutura)")
-                            self.logger.debug(f"Tabela não-maintain {table_name} replicada (apenas estrutura)")
+                            # TABELAS NÃO-MAINTAIN: Preserva dados existentes e atualiza apenas estrutura
+                            self.logger.debug(f"Tabela NÃO-MAINTAIN {table_name}: preservando dados, atualizando estrutura")
+                            
+                            # Verifica se a tabela já existe no destino
+                            table_exists = self.target_db.table_exists(table_name)
+                            
+                            if table_exists:
+                                # Preserva os dados existentes durante atualização estrutural
+                                self._update_table_structure_preserving_data(table_name, create_statement)
+                                replicated_tables.append(f"{table_name} (estrutura atualizada, dados preservados)")
+                                self.logger.debug(f"Tabela não-maintain {table_name}: estrutura atualizada, dados preservados")
+                            else:
+                                # Tabela não existe: cria nova apenas com estrutura (sem dados)
+                                self.target_db.create_table_from_statement(create_statement)
+                                replicated_tables.append(f"{table_name} (nova estrutura criada)")
+                                self.logger.debug(f"Tabela não-maintain {table_name}: nova tabela criada (apenas estrutura)")
                         
                     except DatabaseOperationError as e:
                         # Se for erro relacionado a FK, tenta ignorar
@@ -665,3 +681,183 @@ class ReplicationManager:
             self.logger.warning(f"Erro ao ordenar tabelas por dependência: {e}")
             # Se falhar, retorna ordem original
             return tables
+
+    def _clean_create_statement_for_temp(self, create_statement: str, temp_table_name: str) -> str:
+        """
+        Remove restrições de FK do statement CREATE para tabela temporária
+        
+        Args:
+            create_statement (str): Statement CREATE original
+            temp_table_name (str): Nome da tabela temporária
+            
+        Returns:
+            str: Statement CREATE limpo para tabela temporária
+        """
+        try:
+            lines = create_statement.split('\n')
+            cleaned_lines = []
+            
+            for line in lines:
+                line_stripped = line.strip()
+                
+                # Substituir nome da tabela pelo nome temporário
+                if 'CREATE TABLE' in line_stripped:
+                    # Encontrar e substituir o nome da tabela
+                    import re
+                    line = re.sub(r'CREATE TABLE `([^`]+)`', f'CREATE TABLE `{temp_table_name}`', line)
+                    cleaned_lines.append(line)
+                # Pular linhas que contêm restrições de FK
+                elif (line_stripped.startswith('CONSTRAINT') and 'FOREIGN KEY' in line_stripped) or \
+                     line_stripped.startswith('FOREIGN KEY') or \
+                     (line_stripped.startswith('KEY') and 'FOREIGN' in line_stripped) or \
+                     line_stripped.startswith('ADD CONSTRAINT'):
+                    continue
+                # Linha de fechamento da tabela
+                elif line_stripped.startswith(')') and ('ENGINE=' in line_stripped or 'CHARSET=' in line_stripped):
+                    # Remover vírgula do final da linha anterior se existir
+                    if cleaned_lines and cleaned_lines[-1].strip().endswith(','):
+                        cleaned_lines[-1] = cleaned_lines[-1].rstrip().rstrip(',')
+                    cleaned_lines.append(line)
+                else:
+                    cleaned_lines.append(line)
+            
+            # Verificar se há vírgula final antes do fechamento e remover se necessário
+            result_lines = []
+            for i, line in enumerate(cleaned_lines):
+                if i == len(cleaned_lines) - 1:  # Última linha
+                    result_lines.append(line)
+                elif i == len(cleaned_lines) - 2:  # Penúltima linha
+                    # Se a próxima linha é fechamento da tabela, remover vírgula final
+                    next_line = cleaned_lines[i + 1].strip()
+                    if next_line.startswith(')') and line.strip().endswith(','):
+                        result_lines.append(line.rstrip().rstrip(','))
+                    else:
+                        result_lines.append(line)
+                else:
+                    result_lines.append(line)
+            
+            return '\n'.join(result_lines)
+            
+        except Exception as e:
+            self.logger.warning(f"Erro ao limpar statement CREATE: {e}")
+            # Em caso de erro, apenas substitui o nome da tabela
+            import re
+            return re.sub(r'CREATE TABLE `([^`]+)`', f'CREATE TABLE `{temp_table_name}`', create_statement)
+    
+    def _update_table_structure_preserving_data(self, table_name: str, new_create_statement: str) -> None:
+        """
+        Atualiza a estrutura de uma tabela preservando os dados existentes
+        
+        Args:
+            table_name (str): Nome da tabela
+            new_create_statement (str): Novo CREATE TABLE statement
+        """
+        temp_table = None
+        backup_table = None
+        
+        try:
+            self.logger.info(f"Atualizando estrutura da tabela {table_name} preservando dados...")
+            
+            # Nomes das tabelas temporárias
+            import random
+            suffix = f"{int(time.time())}_{random.randint(1000, 9999)}"
+            temp_table = f"temp_repl_{table_name}_{suffix}"
+            backup_table = f"backup_repl_{table_name}_{suffix}"
+            
+            # Desabilitar verificações de FK temporariamente
+            self.target_db.execute_query("SET FOREIGN_KEY_CHECKS = 0", fetch_results=False)
+            
+            try:
+                # 1. Criar tabela temporária com nova estrutura (sem FKs)
+                temp_create_statement = self._clean_create_statement_for_temp(new_create_statement, temp_table)
+                
+                self.logger.debug(f"Criando tabela temporária {temp_table}")
+                self.target_db.create_table_from_statement(temp_create_statement)
+                
+                # 2. Obter estrutura da tabela original e nova
+                original_columns = [col['name'] for col in self.target_db.get_table_columns(table_name)]
+                new_columns = [col['name'] for col in self.target_db.get_table_columns(temp_table)]
+                
+                # 3. Encontrar colunas em comum
+                common_columns = [col for col in original_columns if col in new_columns]
+                
+                if common_columns:
+                    # 4. Copiar dados compatíveis para tabela temporária
+                    columns_str = ", ".join([f"`{col}`" for col in common_columns])
+                    
+                    copy_query = f"""
+                    INSERT INTO `{temp_table}` ({columns_str})
+                    SELECT {columns_str}
+                    FROM `{table_name}`
+                    """
+                    
+                    self.logger.debug(f"Copiando dados de {len(common_columns)} colunas comuns: {common_columns}")
+                    self.target_db.execute_query(copy_query, fetch_results=False)
+                    
+                    # Verifica quantos registros foram copiados
+                    count_query = f"SELECT COUNT(*) as count FROM `{temp_table}`"
+                    result = self.target_db.execute_query(count_query)
+                    copied_records = result[0]['count'] if result else 0
+                    
+                    self.logger.info(f"Copiados {copied_records} registros preservando dados existentes")
+                else:
+                    self.logger.warning(f"Nenhuma coluna em comum encontrada entre estruturas antiga e nova de {table_name}")
+                
+                # 5. Fazer backup da tabela original (para segurança)
+                self.logger.debug(f"Renomeando tabela original para backup: {backup_table}")
+                rename_to_backup_query = f"RENAME TABLE `{table_name}` TO `{backup_table}`"
+                self.target_db.execute_query(rename_to_backup_query, fetch_results=False)
+                
+                # 6. Renomear tabela temporária para o nome original
+                self.logger.debug(f"Renomeando tabela temporária {temp_table} para {table_name}")
+                rename_temp_query = f"RENAME TABLE `{temp_table}` TO `{table_name}`"
+                self.target_db.execute_query(rename_temp_query, fetch_results=False)
+                
+                # Marcar temp_table como None já que foi renomeado
+                temp_table = None
+                
+                # 7. Remover tabela de backup (opcional - pode manter para segurança)
+                self.logger.debug(f"Removendo tabela de backup {backup_table}")
+                self.target_db.drop_table_if_exists(backup_table)
+                backup_table = None
+                
+                self.logger.info(f"Estrutura de {table_name} atualizada com sucesso, dados preservados")
+                
+            finally:
+                # Reabilitar verificações de FK
+                self.target_db.execute_query("SET FOREIGN_KEY_CHECKS = 1", fetch_results=False)
+                
+        except Exception as e:
+            # Em caso de erro, tenta fazer cleanup
+            self.logger.error(f"Erro durante atualização estrutural de {table_name}: {e}")
+            
+            try:
+                # Desabilitar FK checks para cleanup
+                self.target_db.execute_query("SET FOREIGN_KEY_CHECKS = 0", fetch_results=False)
+                
+                # Remove tabela temporária se existir
+                if temp_table and self.target_db.table_exists(temp_table):
+                    self.target_db.drop_table_if_exists(temp_table)
+                
+                # Se tiver renomeado a original, tenta restaurar
+                if backup_table and self.target_db.table_exists(backup_table):
+                    # Se tabela original não existe, restaura do backup
+                    if not self.target_db.table_exists(table_name):
+                        restore_query = f"RENAME TABLE `{backup_table}` TO `{table_name}`"
+                        self.target_db.execute_query(restore_query, fetch_results=False)
+                        self.logger.info(f"Tabela {table_name} restaurada do backup após erro")
+                    else:
+                        # Remove backup já que tabela original existe
+                        self.target_db.drop_table_if_exists(backup_table)
+                
+            except Exception as cleanup_error:
+                self.logger.error(f"Erro durante cleanup de {table_name}: {cleanup_error}")
+            finally:
+                # Reabilitar FK checks
+                try:
+                    self.target_db.execute_query("SET FOREIGN_KEY_CHECKS = 1", fetch_results=False)
+                except:
+                    pass
+            
+            # Re-lança a exceção original
+            raise ReplicationError(f"Erro na atualização estrutural de {table_name}: {e}")
