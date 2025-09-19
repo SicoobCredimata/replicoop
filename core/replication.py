@@ -274,6 +274,18 @@ class ReplicationManager:
                             # Cria tabela no destino
                             self.target_db.create_table_from_statement(create_statement)
                             
+                            # RESETAR AUTO_INCREMENT para preservar IDs originais
+                            try:
+                                # Verifica se a tabela tem campo AUTO_INCREMENT
+                                table_structure = self.target_db.get_table_structure(table_name)
+                                has_auto_increment = any(col.get('Extra', '').lower() == 'auto_increment' for col in table_structure)
+                                
+                                if has_auto_increment:
+                                    self.logger.debug(f"Resetando AUTO_INCREMENT da tabela {table_name} para preservar IDs originais")
+                                    self.target_db.execute_query(f"ALTER TABLE `{table_name}` AUTO_INCREMENT = 1", fetch_results=False)
+                            except Exception as e:
+                                self.logger.warning(f"Não foi possível resetar AUTO_INCREMENT para {table_name}: {e}")
+                            
                             # Replica os dados de origem
                             try:
                                 self._replicate_table_data(table_name)
@@ -515,6 +527,58 @@ class ReplicationManager:
         try:
             self.logger.debug(f"Iniciando replicação de dados da tabela {table_name}")
             
+            # Configurar modo SQL para preservar valores 0 em colunas AUTO_INCREMENT
+            self.target_db.set_zero_preserve_mode(True)
+            
+            # Verificar se a tabela tem campo AUTO_INCREMENT
+            table_structure = self.target_db.get_table_structure(table_name)
+            auto_increment_field = None
+            for col in table_structure:
+                if col.get('Extra', '').lower() == 'auto_increment':
+                    auto_increment_field = col['Field']
+                    break
+            
+            # NOVA ESTRATÉGIA: Para preservar IDs=0, desabilitar AUTO_INCREMENT temporariamente
+            needs_auto_increment_fix = False
+            original_auto_increment_value = None
+            
+            if auto_increment_field:
+                # Verifica se há registros com ID=0 na origem
+                check_zero_query = f"SELECT COUNT(*) as count FROM `{table_name}` WHERE `{auto_increment_field}` = 0"
+                zero_result = self.source_db.execute_query(check_zero_query)
+                has_zero_id = zero_result[0]['count'] > 0 if zero_result else False
+                
+                if has_zero_id:
+                    self.logger.info(f"🚨 Tabela {table_name} tem registros com {auto_increment_field}=0, aplicando correção especial...")
+                    needs_auto_increment_fix = True
+                    
+                    # Salva o valor atual do AUTO_INCREMENT
+                    show_create_query = f"SHOW CREATE TABLE `{table_name}`"
+                    create_result = self.target_db.execute_query(show_create_query)
+                    if create_result:
+                        create_table_sql = create_result[0]['Create Table']
+                        import re
+                        match = re.search(r'AUTO_INCREMENT=(\d+)', create_table_sql)
+                        if match:
+                            original_auto_increment_value = int(match.group(1))
+                            self.logger.info(f"💾 Valor original AUTO_INCREMENT: {original_auto_increment_value}")
+                    
+                    # Remove o AUTO_INCREMENT temporariamente
+                    self.logger.info(f"🔧 Removendo AUTO_INCREMENT temporariamente da coluna {auto_increment_field}...")
+                    
+                    # Obtém definição completa da coluna
+                    column_def = None
+                    for col in table_structure:
+                        if col['Field'] == auto_increment_field:
+                            null_part = "NOT NULL" if col['Null'] == 'NO' else "NULL"
+                            column_def = f"`{col['Field']}` {col['Type']} {null_part}"
+                            break
+                    
+                    if column_def:
+                        alter_remove_query = f"ALTER TABLE `{table_name}` MODIFY COLUMN {column_def}"
+                        self.target_db.execute_query(alter_remove_query, fetch_results=False)
+                        self.logger.info(f"✅ AUTO_INCREMENT removido temporariamente")
+            
             # LIMPA os dados da tabela destino para garantir dados idênticos
             self.logger.debug(f"Limpando dados existentes da tabela {table_name} no destino")
             self.target_db.execute_query(f"DELETE FROM `{table_name}`", fetch_results=False)
@@ -533,9 +597,19 @@ class ReplicationManager:
             columns = self.source_db.get_table_columns(table_name)
             column_names = [col['name'] for col in columns]
             
-            # Monta queries
+            # Monta queries - usa REPLACE INTO para garantir que IDs específicos sejam preservados
             select_query = f"SELECT * FROM `{table_name}` LIMIT %s OFFSET %s"
-            insert_query = f"INSERT INTO `{table_name}` ({', '.join([f'`{col}`' for col in column_names])}) VALUES ({', '.join(['%s'] * len(column_names))})"
+            
+            # Para tabelas com AUTO_INCREMENT, usar INSERT INTO simples já que removemos o AUTO_INCREMENT
+            if needs_auto_increment_fix:
+                insert_query = f"INSERT INTO `{table_name}` ({', '.join([f'`{col}`' for col in column_names])}) VALUES ({', '.join(['%s'] * len(column_names))})"
+                self.logger.info(f"🔧 TABELA {table_name}: Usando INSERT INTO (AUTO_INCREMENT temporariamente removido)")
+            elif auto_increment_field:
+                insert_query = f"REPLACE INTO `{table_name}` ({', '.join([f'`{col}`' for col in column_names])}) VALUES ({', '.join(['%s'] * len(column_names))})"
+                self.logger.info(f"🔧 TABELA {table_name}: Usando REPLACE INTO para preservar IDs")
+            else:
+                insert_query = f"INSERT INTO `{table_name}` ({', '.join([f'`{col}`' for col in column_names])}) VALUES ({', '.join(['%s'] * len(column_names))})"
+                self.logger.info(f"🔧 TABELA {table_name}: Usando INSERT INTO normal")
             
             # Processa em lotes
             processed = 0
@@ -554,6 +628,10 @@ class ReplicationManager:
                         # Converte row dict para lista ordenada de valores
                         row_values = [row.get(col) for col in column_names]
                         batch_values.append(row_values)
+                        
+                        # Log detalhado para registros com ID = 0
+                        if auto_increment_field and row.get(auto_increment_field) == 0:
+                            self.logger.info(f"📝 INSERINDO REGISTRO ID=0: {dict(zip(column_names, row_values))}")
                     
                     # Insere lote no destino
                     self.target_db.execute_many_query(insert_query, batch_values)
@@ -561,9 +639,71 @@ class ReplicationManager:
                     processed += len(batch_data)
                     data_pbar.update(len(batch_data))
             
+            # Restaura AUTO_INCREMENT se foi removido
+            if needs_auto_increment_fix and auto_increment_field:
+                # PRIMEIRO: Verifica se os IDs=0 foram preservados (antes de restaurar AUTO_INCREMENT)
+                check_query = f"SELECT COUNT(*) as count FROM `{table_name}` WHERE `{auto_increment_field}` = 0"
+                result = self.target_db.execute_query(check_query)
+                zero_count = result[0]['count'] if result else 0
+                
+                if zero_count > 0:
+                    self.logger.info(f"✅ {zero_count} registro(s) com ID=0 preservados com sucesso!")
+                    
+                    # DECISÃO CRÍTICA: NÃO restaurar AUTO_INCREMENT se há registros com ID=0
+                    # pois o MySQL irá converter ID=0 para o próximo valor disponível
+                    self.logger.warning(f"⚠️ AUTO_INCREMENT NÃO será restaurado para preservar IDs com valor 0")
+                    self.logger.warning(f"⚠️ Tabela {table_name} ficará sem AUTO_INCREMENT para manter integridade dos dados")
+                    
+                else:
+                    self.logger.info(f"🔧 Restaurando AUTO_INCREMENT na coluna {auto_increment_field}...")
+                    
+                    # Obtém definição completa da coluna com AUTO_INCREMENT
+                    column_def = None
+                    for col in table_structure:
+                        if col['Field'] == auto_increment_field:
+                            null_part = "NOT NULL" if col['Null'] == 'NO' else "NULL"
+                            column_def = f"`{col['Field']}` {col['Type']} {null_part} AUTO_INCREMENT"
+                            break
+                    
+                    if column_def:
+                        alter_restore_query = f"ALTER TABLE `{table_name}` MODIFY COLUMN {column_def}"
+                        self.target_db.execute_query(alter_restore_query, fetch_results=False)
+                    
+                    # Restaura o valor do AUTO_INCREMENT
+                    if original_auto_increment_value is not None:
+                        # Ajusta para o próximo valor disponível
+                        max_id_query = f"SELECT COALESCE(MAX(`{auto_increment_field}`), 0) as max_id FROM `{table_name}`"
+                        max_result = self.target_db.execute_query(max_id_query)
+                        current_max = max_result[0]['max_id'] if max_result else 0
+                        next_auto_increment = max(current_max + 1, original_auto_increment_value)
+                        
+                        alter_increment_query = f"ALTER TABLE `{table_name}` AUTO_INCREMENT = {next_auto_increment}"
+                        self.target_db.execute_query(alter_increment_query, fetch_results=False)
+                        self.logger.info(f"✅ AUTO_INCREMENT restaurado para: {next_auto_increment}")
+                        
+            else:
+                # Se não há correção especial, verifica se há registros com ID=0
+                if auto_increment_field:
+                    check_query = f"SELECT COUNT(*) as count FROM `{table_name}` WHERE `{auto_increment_field}` = 0"
+                    result = self.target_db.execute_query(check_query)
+                    zero_count = result[0]['count'] if result else 0
+                    if zero_count > 0:
+                        self.logger.info(f"✅ {zero_count} registro(s) com ID=0 preservados!")
+                    else:
+                        self.logger.debug(f"ℹ️ Nenhum registro com ID=0 na tabela {table_name}")
+            
             self.logger.debug(f"Dados da tabela {table_name} replicados com sucesso: {processed} registros")
             
+            # Restaurar modo SQL padrão
+            self.target_db.set_zero_preserve_mode(False)
+            
         except Exception as e:
+            # Restaurar modo SQL padrão em caso de erro
+            try:
+                self.target_db.set_zero_preserve_mode(False)
+            except:
+                pass
+                
             self.logger.error(f"Erro ao replicar dados da tabela {table_name}: {e}")
             raise DatabaseOperationError(f"Falha na replicação de dados de {table_name}: {e}")
     
@@ -782,6 +922,9 @@ class ReplicationManager:
                 common_columns = [col for col in original_columns if col in new_columns]
                 
                 if common_columns:
+                    # Configurar modo SQL para preservar valores 0 em colunas AUTO_INCREMENT
+                    self.target_db.set_zero_preserve_mode(True)
+                    
                     # 4. Copiar dados compatíveis para tabela temporária
                     columns_str = ", ".join([f"`{col}`" for col in common_columns])
                     
@@ -826,6 +969,11 @@ class ReplicationManager:
             finally:
                 # Reabilitar verificações de FK
                 self.target_db.execute_query("SET FOREIGN_KEY_CHECKS = 1", fetch_results=False)
+                # Restaurar modo SQL padrão
+                try:
+                    self.target_db.set_zero_preserve_mode(False)
+                except:
+                    pass
                 
         except Exception as e:
             # Em caso de erro, tenta fazer cleanup

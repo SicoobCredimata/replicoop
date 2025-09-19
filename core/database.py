@@ -144,6 +144,30 @@ class DatabaseManager:
             self.logger.error(f"Erro ao executar batch query: {e}")
             raise DatabaseOperationError(f"Erro na execução em batch: {e}")
     
+    def set_zero_preserve_mode(self, enable: bool = True) -> None:
+        """
+        Configura o modo SQL para preservar valores 0 em colunas AUTO_INCREMENT
+        
+        Args:
+            enable (bool): Se True, permite inserção de valor 0. Se False, restaura comportamento padrão.
+        """
+        try:
+            if enable:
+                # Configurações específicas para preservar IDs com valor 0
+                self.execute_query("SET SESSION sql_mode = ''", fetch_results=False)  # Remove todas as restrições
+                self.execute_query("SET SESSION SQL_MODE = 'ALLOW_INVALID_DATES,NO_ENGINE_SUBSTITUTION'", fetch_results=False)
+                self.execute_query("SET @@SESSION.sql_mode = 'NO_ENGINE_SUBSTITUTION'", fetch_results=False)
+                # Força o comportamento desejado em AUTO_INCREMENT
+                self.execute_query("SET @@auto_increment_offset = 1", fetch_results=False)
+                self.execute_query("SET @@auto_increment_increment = 1", fetch_results=False)
+                self.logger.debug("Modo SQL configurado para preservar valores 0 em AUTO_INCREMENT")
+            else:
+                # Restaura modo padrão do MySQL/MariaDB
+                self.execute_query("SET SESSION sql_mode = DEFAULT", fetch_results=False)
+                self.logger.debug("Modo SQL restaurado para comportamento padrão")
+        except Exception as e:
+            self.logger.warning(f"Erro ao configurar modo SQL: {e}")
+    
     def execute_query(self, query: str, params: Optional[Tuple] = None, 
                      fetch_results: bool = True) -> Optional[List[Dict]]:
         """
