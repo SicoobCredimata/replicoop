@@ -423,10 +423,10 @@ class DatabaseManager:
         foreign_keys = []
         for row in results:
             foreign_keys.append({
-                'constraint_name': row[0],
-                'column_name': row[1],
-                'referenced_table': row[2],
-                'referenced_column': row[3]
+                'constraint_name': row['CONSTRAINT_NAME'],
+                'column_name': row['COLUMN_NAME'],
+                'referenced_table': row['REFERENCED_TABLE_NAME'],
+                'referenced_column': row['REFERENCED_COLUMN_NAME']
             })
         
         return foreign_keys
@@ -521,3 +521,54 @@ class DatabaseManager:
         """
         self.execute_query(create_statement, fetch_results=False)
         self.logger.debug("Tabela criada a partir do statement fornecido")
+    
+    def get_existing_foreign_key_constraints(self, table_name: str) -> List[str]:
+        """
+        Obtém lista de nomes de constraints de foreign key existentes em uma tabela
+        
+        Args:
+            table_name (str): Nome da tabela
+            
+        Returns:
+            List[str]: Lista de nomes de constraints FK existentes
+        """
+        try:
+            query = """
+            SELECT CONSTRAINT_NAME
+            FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
+            WHERE TABLE_SCHEMA = %s 
+            AND TABLE_NAME = %s 
+            AND REFERENCED_TABLE_NAME IS NOT NULL
+            """
+            
+            results = self.execute_query(query, (self.config.dbname, table_name))
+            
+            constraint_names = []
+            for row in results:
+                constraint_names.append(row['CONSTRAINT_NAME'])
+            
+            return constraint_names
+            
+        except Exception as e:
+            self.logger.warning(f"Erro ao obter constraints FK existentes de {table_name}: {e}")
+            return []
+    
+    def drop_foreign_key_constraint(self, table_name: str, constraint_name: str) -> bool:
+        """
+        Remove uma constraint de foreign key específica
+        
+        Args:
+            table_name (str): Nome da tabela
+            constraint_name (str): Nome da constraint
+            
+        Returns:
+            bool: True se removida com sucesso, False caso contrário
+        """
+        try:
+            drop_statement = f"ALTER TABLE `{table_name}` DROP FOREIGN KEY `{constraint_name}`"
+            self.execute_query(drop_statement, fetch_results=False)
+            self.logger.debug(f"Constraint FK removida: {table_name}.{constraint_name}")
+            return True
+        except Exception as e:
+            self.logger.debug(f"Erro ao remover constraint {constraint_name} de {table_name}: {e}")
+            return False

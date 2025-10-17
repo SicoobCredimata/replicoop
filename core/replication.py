@@ -141,6 +141,7 @@ class ReplicationManager:
                 'tables_to_replicate': [],
                 'tables_to_drop': [],
                 'foreign_key_issues': [],
+                'foreign_keys_to_recreate': [],  # NOVO: FKs para recriar após replicação
                 'warnings': []
             }
             
@@ -154,7 +155,8 @@ class ReplicationManager:
                     'name': table,
                     'action': 'create',
                     'has_foreign_keys': False,
-                    'foreign_keys': []
+                    'foreign_keys': [],
+                    'create_statement_fks': []  # NOVO: FKs extraídas do CREATE TABLE
                 }
                 
                 # Verifica se tabela existe no destino
@@ -167,6 +169,14 @@ class ReplicationManager:
                     if foreign_keys:
                         table_plan['has_foreign_keys'] = True
                         table_plan['foreign_keys'] = foreign_keys
+                        
+                        # NOVO: Extrai FKs do CREATE TABLE para recriar depois
+                        create_statement = self.source_db.get_create_table_statement(table)
+                        create_statement_fks = self._extract_foreign_keys_from_create_statement(create_statement, table)
+                        table_plan['create_statement_fks'] = create_statement_fks
+                        
+                        # Adiciona ao plano global para recriar depois
+                        plan['foreign_keys_to_recreate'].extend(create_statement_fks)
                         
                         # Verifica se tabelas referenciadas existem
                         for fk in foreign_keys:
@@ -375,6 +385,22 @@ class ReplicationManager:
             # Reabilita verificação de FKs
             self.target_db.enable_foreign_key_checks()
             
+            # NOVA FUNCIONALIDADE: Recria as chaves estrangeiras após replicação
+            fk_recreation_report = None
+            if plan.get('foreign_keys_to_recreate'):
+                self.logger.info("=== RECRIANDO CHAVES ESTRANGEIRAS ===")
+                try:
+                    fk_recreation_report = self._recreate_foreign_keys(plan['foreign_keys_to_recreate'])
+                except Exception as fk_error:
+                    self.logger.error(f"Erro ao recriar chaves estrangeiras: {fk_error}")
+                    # Não falha a replicação por causa das FKs, apenas registra o erro
+                    fk_recreation_report = {
+                        'success': False,
+                        'total_fks': len(plan.get('foreign_keys_to_recreate', [])),
+                        'recreated_fks': 0,
+                        'failed_fks': [{'error': str(fk_error)}]
+                    }
+            
             execution_time = time.time() - start_time
             success_count = len(replicated_tables)
             
@@ -389,6 +415,13 @@ class ReplicationManager:
                 self.logger.info(f"Tabelas com dados replicados: {len(data_replicated_tables)}")
             self.logger.info(f"Tempo de execução: {execution_time:.2f}s")
             
+            # Log do resultado das FKs
+            if fk_recreation_report:
+                if fk_recreation_report['success']:
+                    self.logger.info(f"🔗 Chaves estrangeiras: {fk_recreation_report['recreated_fks']} recriadas com sucesso!")
+                else:
+                    self.logger.warning(f"⚠️ Chaves estrangeiras: {fk_recreation_report['recreated_fks']}/{fk_recreation_report['total_fks']} recriadas")
+            
             return {
                 'success': len(failed_tables) == 0,
                 'tables_replicated': success_count,
@@ -397,7 +430,8 @@ class ReplicationManager:
                 'failed_tables': failed_tables,
                 'execution_time': execution_time,
                 'backup_created': backup_path,
-                'plan': plan
+                'plan': plan,
+                'foreign_keys_recreation': fk_recreation_report  # NOVO: Relatório das FKs
             }
             
         except Exception as e:
@@ -445,6 +479,148 @@ class ReplicationManager:
         result = result.replace(', )', ' )')
         
         return result
+    
+    def _extract_foreign_keys_from_create_statement(self, create_statement: str, table_name: str) -> List[Dict[str, str]]:
+        """
+        Extrai definições de chaves estrangeiras do statement CREATE TABLE
+        
+        Args:
+            create_statement (str): Statement CREATE TABLE original
+            table_name (str): Nome da tabela
+            
+        Returns:
+            List[Dict[str, str]]: Lista de definições de FK para recriar depois
+        """
+        foreign_keys = []
+        lines = create_statement.split('\n')
+        
+        for line in lines:
+            line_stripped = line.strip()
+            line_lower = line_stripped.lower()
+            
+            # Encontra linhas com definições de CONSTRAINT FOREIGN KEY
+            if line_lower.startswith('constraint') and 'foreign key' in line_lower:
+                try:
+                    # Extrai o nome da constraint e a definição completa
+                    # Exemplo: CONSTRAINT `processes_ibfk_1` FOREIGN KEY (`procedure_id`) REFERENCES `procedures` (`id`)
+                    
+                    # Remove vírgula do final se houver
+                    clean_line = line_stripped.rstrip(',').strip()
+                    
+                    # Extrai o nome da constraint para poder remover se já existir
+                    constraint_name = None
+                    try:
+                        # Busca por CONSTRAINT `nome` ou CONSTRAINT nome
+                        import re
+                        constraint_match = re.search(r'CONSTRAINT\s+[`"]?([^`"\s]+)[`"]?', clean_line, re.IGNORECASE)
+                        if constraint_match:
+                            constraint_name = constraint_match.group(1)
+                    except:
+                        pass
+                    
+                    # Adiciona a definição completa da FK para recriar depois
+                    foreign_keys.append({
+                        'table_name': table_name,
+                        'constraint_name': constraint_name,
+                        'constraint_definition': clean_line,
+                        'alter_statement': f"ALTER TABLE `{table_name}` ADD {clean_line}"
+                    })
+                    
+                    self.logger.debug(f"FK extraída de {table_name}: {clean_line}")
+                    
+                except Exception as e:
+                    self.logger.warning(f"Erro ao extrair FK da linha '{line_stripped}': {e}")
+                    continue
+        
+        return foreign_keys
+    
+    def _recreate_foreign_keys(self, foreign_keys_list: List[Dict[str, str]]) -> Dict[str, Any]:
+        """
+        Recria as chaves estrangeiras após a replicação das tabelas
+        
+        Args:
+            foreign_keys_list (List[Dict[str, str]]): Lista de FKs para recriar
+            
+        Returns:
+            Dict[str, Any]: Relatório da recriação de FKs
+        """
+        if not foreign_keys_list:
+            self.logger.info("Nenhuma chave estrangeira para recriar")
+            return {
+                'success': True,
+                'total_fks': 0,
+                'recreated_fks': 0,
+                'failed_fks': []
+            }
+        
+        self.logger.info(f"Recriando {len(foreign_keys_list)} chave(s) estrangeira(s)...")
+        
+        recreated_count = 0
+        failed_fks = []
+        
+        # Desabilita verificação de FKs temporariamente para evitar problemas de ordem
+        self.target_db.disable_foreign_key_checks()
+        
+        try:
+            # Agrupa FKs por tabela para otimizar
+            fks_by_table = {}
+            for fk in foreign_keys_list:
+                table_name = fk['table_name']
+                if table_name not in fks_by_table:
+                    fks_by_table[table_name] = []
+                fks_by_table[table_name].append(fk)
+            
+            # PRIMEIRO: Remove todas as constraints FK existentes das tabelas alvo
+            self.logger.debug("Removendo constraints FK existentes...")
+            for table_name in fks_by_table.keys():
+                try:
+                    existing_constraints = self.target_db.get_existing_foreign_key_constraints(table_name)
+                    for constraint_name in existing_constraints:
+                        self.target_db.drop_foreign_key_constraint(table_name, constraint_name)
+                        self.logger.debug(f"Constraint existente removida: {table_name}.{constraint_name}")
+                except Exception as e:
+                    self.logger.debug(f"Erro ao limpar constraints de {table_name}: {e}")
+            
+            # SEGUNDO: Processa cada tabela para recriar as FKs
+            for table_name, table_fks in fks_by_table.items():
+                self.logger.debug(f"Recriando {len(table_fks)} FK(s) para tabela {table_name}")
+                
+                for fk in table_fks:
+                    try:
+                        alter_statement = fk['alter_statement']
+                        
+                        # Executa o ALTER TABLE para adicionar a FK
+                        self.target_db.execute_query(alter_statement, fetch_results=False)
+                        
+                        recreated_count += 1
+                        self.logger.debug(f"FK recriada: {fk['constraint_definition']}")
+                        
+                    except Exception as e:
+                        error_msg = f"Erro ao recriar FK {fk['constraint_definition']}: {e}"
+                        self.logger.warning(error_msg)
+                        failed_fks.append({
+                            'table': table_name,
+                            'constraint': fk['constraint_definition'],
+                            'error': str(e)
+                        })
+        
+        finally:
+            # Reabilita verificação de FKs
+            self.target_db.enable_foreign_key_checks()
+        
+        success = len(failed_fks) == 0
+        
+        if success:
+            self.logger.info(f"✅ Todas as {recreated_count} chave(s) estrangeira(s) foram recriadas com sucesso!")
+        else:
+            self.logger.warning(f"⚠️ {recreated_count} FK(s) recriadas, {len(failed_fks)} falharam")
+        
+        return {
+            'success': success,
+            'total_fks': len(foreign_keys_list),
+            'recreated_fks': recreated_count,
+            'failed_fks': failed_fks
+        }
     
     def validate_replication(self, tables: Optional[List[str]] = None) -> Dict[str, Any]:
         """
