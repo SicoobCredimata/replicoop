@@ -30,17 +30,18 @@ pub struct Config {
 
 impl Config {
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let content = fs::read_to_string(path)
-            .map_err(|e| ReplicoopError::Config(format!("Erro ao ler arquivo de configuração: {}", e)))?;
-        
+        let content = fs::read_to_string(path).map_err(|e| {
+            ReplicoopError::Config(format!("Erro ao ler arquivo de configuração: {}", e))
+        })?;
+
         let config: Config = serde_json::from_str(&content)?;
         Ok(config)
     }
 
     pub fn get_database_config(&self, environment: &str) -> Result<&DatabaseConfig> {
-        self.environments
-            .get(environment)
-            .ok_or_else(|| ReplicoopError::Config(format!("Ambiente '{}' não encontrado", environment)))
+        self.environments.get(environment).ok_or_else(|| {
+            ReplicoopError::Config(format!("Ambiente '{}' não encontrado", environment))
+        })
     }
 
     pub fn get_available_environments(&self) -> Vec<String> {

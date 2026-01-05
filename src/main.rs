@@ -6,7 +6,7 @@ mod logger;
 mod replication;
 
 use clap::{Parser, Subcommand};
-use dialoguer::{theme::ColorfulTheme, Confirm, Input, MultiSelect, Select};
+use dialoguer::{theme::ColorfulTheme, Confirm, Select};
 use std::sync::Arc;
 
 use config::Config;
@@ -70,7 +70,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     let logger = Arc::new(Logger::new("logs"));
-    
+
     logger.header("🚀 ReplicOOP - Sistema de Replicação MySQL v1.0.0");
     logger.info("Sistema Profissional de Replicação em Rust");
 
@@ -105,7 +105,7 @@ fn interactive_mode(config_path: &str, logger: &Arc<Logger>) -> Result<()> {
 
     loop {
         logger.header("📋 MENU PRINCIPAL");
-        
+
         let options = vec![
             "🔄 Replicar Estruturas (com opções)",
             "🔄 Replicar Tudo (estrutura + dados maintain)",
@@ -143,7 +143,11 @@ fn interactive_mode(config_path: &str, logger: &Arc<Logger>) -> Result<()> {
     Ok(())
 }
 
-fn replicate_interactive(config: &Config, replicate_data: bool, logger: &Arc<Logger>) -> Result<()> {
+fn replicate_interactive(
+    config: &Config,
+    replicate_data: bool,
+    logger: &Arc<Logger>,
+) -> Result<()> {
     let environments = config.get_available_environments();
 
     let source_idx = Select::with_theme(&ColorfulTheme::default())
@@ -173,7 +177,14 @@ fn replicate_interactive(config: &Config, replicate_data: bool, logger: &Arc<Log
     println!("   Origem: {}", source_env);
     println!("   Destino: {}", target_env);
     println!("   Backup: {}", if create_backup { "Sim" } else { "Não" });
-    println!("   Dados: {}", if replicate_data { "Tabelas maintain" } else { "Não" });
+    println!(
+        "   Dados: {}",
+        if replicate_data {
+            "Tabelas maintain"
+        } else {
+            "Não"
+        }
+    );
 
     let confirm = Confirm::with_theme(&ColorfulTheme::default())
         .with_prompt("Confirma a replicação?")

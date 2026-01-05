@@ -1,5 +1,5 @@
 use mysql::prelude::*;
-use mysql::{Conn, OptsBuilder, Pool};
+use mysql::{OptsBuilder, Pool, PooledConn};
 use std::sync::Arc;
 
 use crate::config::DatabaseConfig;
@@ -42,30 +42,26 @@ impl DatabaseManager {
         }
     }
 
-    pub fn get_conn(&self) -> Result<Conn> {
+    pub fn get_conn(&self) -> Result<PooledConn> {
         self.pool.get_conn().map_err(ReplicoopError::from)
     }
 
     pub fn get_tables(&self) -> Result<Vec<String>> {
         let mut conn = self.get_conn()?;
-        let tables: Vec<String> = conn
-            .query("SHOW TABLES")
-            .map_err(ReplicoopError::from)?;
+        let tables: Vec<String> = conn.query("SHOW TABLES").map_err(ReplicoopError::from)?;
         Ok(tables)
     }
 
     pub fn get_create_table(&self, table: &str) -> Result<String> {
         let mut conn = self.get_conn()?;
         let query = format!("SHOW CREATE TABLE `{}`", table);
-        
-        let result: Vec<(String, String)> = conn
-            .query(query)
-            .map_err(ReplicoopError::from)?;
+
+        let result: Vec<(String, String)> = conn.query(query).map_err(ReplicoopError::from)?;
 
         result
             .first()
             .map(|(_, create_stmt)| create_stmt.clone())
-            .ok_or_else(|| ReplicoopError::Database(mysql::Error::from("Erro ao obter CREATE TABLE")))
+            .ok_or_else(|| ReplicoopError::Replication("Erro ao obter CREATE TABLE".to_string()))
     }
 
     pub fn execute(&self, query: &str) -> Result<()> {
@@ -75,11 +71,11 @@ impl DatabaseManager {
 
     pub fn execute_multiple(&self, queries: Vec<String>) -> Result<()> {
         let mut conn = self.get_conn()?;
-        
+
         for query in queries {
             conn.query_drop(query).map_err(ReplicoopError::from)?;
         }
-        
+
         Ok(())
     }
 
@@ -90,7 +86,7 @@ impl DatabaseManager {
 
     pub fn get_foreign_keys(&self, table: &str) -> Result<Vec<ForeignKey>> {
         let mut conn = self.get_conn()?;
-        
+
         let query = format!(
             "SELECT 
                 CONSTRAINT_NAME,
@@ -104,38 +100,36 @@ impl DatabaseManager {
             self.config.dbname, table
         );
 
-        let results: Vec<(String, String, String, String)> = conn
-            .query(query)
-            .map_err(ReplicoopError::from)?;
+        let results: Vec<(String, String, String, String)> =
+            conn.query(query).map_err(ReplicoopError::from)?;
 
         Ok(results
             .into_iter()
-            .map(|(constraint_name, column_name, ref_table, ref_column)| ForeignKey {
-                constraint_name,
-                column_name,
-                referenced_table: ref_table,
-                referenced_column: ref_column,
-            })
+            .map(
+                |(constraint_name, column_name, ref_table, ref_column)| ForeignKey {
+                    constraint_name,
+                    column_name,
+                    referenced_table: ref_table,
+                    referenced_column: ref_column,
+                },
+            )
             .collect())
     }
 
     pub fn get_table_row_count(&self, table: &str) -> Result<u64> {
         let mut conn = self.get_conn()?;
         let query = format!("SELECT COUNT(*) as count FROM `{}`", table);
-        
-        let result: Option<u64> = conn
-            .query_first(query)
-            .map_err(ReplicoopError::from)?;
+
+        let result: Option<u64> = conn.query_first(query).map_err(ReplicoopError::from)?;
 
         Ok(result.unwrap_or(0))
     }
 
-    pub fn copy_table_data(&self, source_conn: &mut Conn, table: &str) -> Result<u64> {
+    pub fn copy_table_data(&self, source_conn: &mut PooledConn, table: &str) -> Result<u64> {
         let query = format!("SELECT * FROM `{}`", table);
-        
-        let mut source_rows: Vec<mysql::Row> = source_conn
-            .query(query)
-            .map_err(ReplicoopError::from)?;
+
+        let mut source_rows: Vec<mysql::Row> =
+            source_conn.query(query).map_err(ReplicoopError::from)?;
 
         if source_rows.is_empty() {
             return Ok(0);
@@ -143,19 +137,16 @@ impl DatabaseManager {
 
         let column_count = source_rows[0].len();
         let mut target_conn = self.get_conn()?;
-        
+
         let placeholders = (0..column_count)
             .map(|_| "?")
             .collect::<Vec<_>>()
             .join(", ");
-        
-        let insert_query = format!(
-            "INSERT INTO `{}` VALUES ({})",
-            table, placeholders
-        );
+
+        let insert_query = format!("INSERT INTO `{}` VALUES ({})", table, placeholders);
 
         let mut inserted = 0u64;
-        
+
         for row in source_rows.drain(..) {
             let values: Vec<mysql::Value> = (0..column_count)
                 .map(|i| row.get(i).unwrap_or(mysql::Value::NULL))
@@ -164,7 +155,7 @@ impl DatabaseManager {
             target_conn
                 .exec_drop(&insert_query, values)
                 .map_err(ReplicoopError::from)?;
-            
+
             inserted += 1;
         }
 

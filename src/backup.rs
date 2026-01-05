@@ -4,11 +4,11 @@ use flate2::Compression;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::database::DatabaseManager;
-use crate::error::{ReplicoopError, Result};
+use crate::error::Result;
 use crate::logger::Logger;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -51,12 +51,11 @@ impl BackupManager {
 
         let backup_file = self.backup_path.join(&filename);
 
-        self.logger
-            .info(&format!("Criando backup: {}", filename));
+        self.logger.info(&format!("Criando backup: {}", filename));
 
         // Obtém todas as tabelas
         let tables = db_manager.get_tables()?;
-        
+
         self.logger
             .info(&format!("Backup de {} tabelas", tables.len()));
 
@@ -79,7 +78,7 @@ impl BackupManager {
         // Backup de cada tabela
         for table in &tables {
             let create_stmt = db_manager.get_create_table(table)?;
-            
+
             writeln!(encoder, "-- Table: {}", table)?;
             writeln!(encoder, "DROP TABLE IF EXISTS `{}`;", table)?;
             writeln!(encoder, "{};", create_stmt)?;

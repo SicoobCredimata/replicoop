@@ -13,10 +13,8 @@ impl Logger {
         // Cria o diretório de logs se não existir
         fs::create_dir_all(logs_path).ok();
 
-        let log_file = PathBuf::from(logs_path).join(format!(
-            "replicoop_{}.log",
-            Local::now().format("%Y-%m-%d")
-        ));
+        let log_file = PathBuf::from(logs_path)
+            .join(format!("replicoop_{}.log", Local::now().format("%Y-%m-%d")));
 
         Logger {
             log_file: Some(log_file),
@@ -25,11 +23,7 @@ impl Logger {
 
     fn write_to_file(&self, level: &str, message: &str) {
         if let Some(ref log_file) = self.log_file {
-            if let Ok(mut file) = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(log_file)
-            {
+            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(log_file) {
                 let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S");
                 writeln!(file, "[{}] [{}] {}", timestamp, level, message).ok();
             }

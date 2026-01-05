@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::backup::BackupManager;
-use crate::config::{Config, DatabaseConfig};
+use crate::config::Config;
 use crate::database::DatabaseManager;
 use crate::error::{ReplicoopError, Result};
 use crate::logger::Logger;
@@ -27,11 +27,7 @@ impl ReplicationManager {
         })
     }
 
-    pub fn setup_databases(
-        &mut self,
-        source_env: &str,
-        target_env: &str,
-    ) -> Result<()> {
+    pub fn setup_databases(&mut self, source_env: &str, target_env: &str) -> Result<()> {
         self.logger.info(&format!(
             "Configurando bancos de dados: {} → {}",
             source_env, target_env
@@ -73,17 +69,18 @@ impl ReplicationManager {
             .as_ref()
             .ok_or_else(|| ReplicoopError::Replication("Banco de origem não configurado".into()))?;
 
-        let target_db = self
-            .target_db
-            .as_ref()
-            .ok_or_else(|| ReplicoopError::Replication("Banco de destino não configurado".into()))?;
+        let target_db = self.target_db.as_ref().ok_or_else(|| {
+            ReplicoopError::Replication("Banco de destino não configurado".into())
+        })?;
 
         let backup_path = if create_backup {
             self.logger.info("Criando backup antes da replicação...");
-            
-            let backup_mgr = self.backup_manager.as_ref()
+
+            let backup_mgr = self
+                .backup_manager
+                .as_ref()
                 .ok_or_else(|| ReplicoopError::Backup("BackupManager não inicializado".into()))?;
-            
+
             Some(backup_mgr.create_backup(target_db, "target")?)
         } else {
             None
@@ -102,7 +99,7 @@ impl ReplicationManager {
         ));
 
         let maintain_tables = self.config.get_maintain_tables();
-        
+
         let pb = ProgressBar::new(tables_to_replicate.len() as u64);
         pb.set_style(
             ProgressStyle::default_bar()
@@ -121,7 +118,8 @@ impl ReplicationManager {
         for table in &tables_to_replicate {
             pb.set_message(format!("Replicando {}", table));
 
-            match self.replicate_table(source_db, target_db, table, replicate_data, maintain_tables) {
+            match self.replicate_table(source_db, target_db, table, replicate_data, maintain_tables)
+            {
                 Ok(has_data) => {
                     replicated_tables.push(table.clone());
                     if has_data {
@@ -129,7 +127,8 @@ impl ReplicationManager {
                     }
                 }
                 Err(e) => {
-                    self.logger.error(&format!("Erro ao replicar {}: {}", table, e));
+                    self.logger
+                        .error(&format!("Erro ao replicar {}: {}", table, e));
                     failed_tables.push(FailedTable {
                         table: table.clone(),
                         error: e.to_string(),
@@ -193,7 +192,7 @@ impl ReplicationManager {
 
         for env in environments {
             let config = self.config.get_database_config(&env)?.clone();
-            
+
             match DatabaseManager::new(config, Arc::clone(&self.logger)) {
                 Ok(db_manager) => {
                     let connected = db_manager.test_connection().unwrap_or(false);
