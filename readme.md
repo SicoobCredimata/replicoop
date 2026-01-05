@@ -1,11 +1,27 @@
 # 🚀 ReplicOOP - Sistema de Replicação MySQL
 
-Sistema avançado para replicação de estruturas e dados de banco de dados MySQL desenvolvido em Python.
+Sistema avançado para replicação de estruturas e dados de banco de dados MySQL.
+
+## 🦀 NOVA VERSÃO EM RUST DISPONÍVEL!
+
+Este projeto agora está disponível em **duas versões**:
+
+- **🐍 Python (Original)**: Versão estável e testada em produção
+- **🦀 Rust (Nova)**: Versão refatorada para **melhor performance e segurança**
+
+### Por que Rust?
+
+✨ **2-3x mais rápido** | 🔒 **Memory-safe** | 📦 **Binário standalone** | ⚡ **Zero overhead**
+
+👉 **[Ver Documentação da Versão Rust →](README_RUST.md)**
+
+---
 
 ## 📋 **Documentação Completa**
 
 📁 **[Ver Documentação Completa em docs/README.md](docs/README.md)**  
-🧪 **[Ver Testes em docs/tests/README.md](docs/tests/README.md)**
+🧪 **[Ver Testes em docs/tests/README.md](docs/tests/README.md)**  
+🦀 **[Ver Versão Rust](README_RUST.md)**
 
 ---
 
