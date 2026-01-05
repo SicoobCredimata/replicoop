@@ -30,6 +30,42 @@ impl DatabaseManager {
         })
     }
 
+    /// Valida nome de tabela para prevenir SQL injection
+    /// Apenas permite caracteres alfanuméricos, underscore e hífen
+    fn validate_table_name(table: &str) -> Result<()> {
+        if table.is_empty() {
+            return Err(ReplicoopError::Config(
+                "Nome de tabela não pode ser vazio".to_string(),
+            ));
+        }
+
+        // Verifica se contém apenas caracteres seguros
+        if !table
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+        {
+            return Err(ReplicoopError::Config(format!(
+                "Nome de tabela inválido: '{}'. Apenas alfanuméricos, _ e - são permitidos",
+                table
+            )));
+        }
+
+        // Verifica tamanho razoável (MySQL limit)
+        if table.len() > 64 {
+            return Err(ReplicoopError::Config(
+                "Nome de tabela muito longo (max 64 caracteres)".to_string(),
+            ));
+        }
+
+        Ok(())
+    }
+
+    /// Escapa nome de tabela com backticks após validação
+    fn escape_table_name(table: &str) -> Result<String> {
+        Self::validate_table_name(table)?;
+        Ok(format!("`{}`", table))
+    }
+
     pub fn test_connection(&self) -> Result<bool> {
         match self.pool.get_conn() {
             Ok(mut conn) => {
@@ -54,7 +90,8 @@ impl DatabaseManager {
 
     pub fn get_create_table(&self, table: &str) -> Result<String> {
         let mut conn = self.get_conn()?;
-        let query = format!("SHOW CREATE TABLE `{}`", table);
+        let escaped_table = Self::escape_table_name(table)?;
+        let query = format!("SHOW CREATE TABLE {}", escaped_table);
 
         let result: Vec<(String, String)> = conn.query(query).map_err(ReplicoopError::from)?;
 
@@ -80,28 +117,28 @@ impl DatabaseManager {
     }
 
     pub fn drop_table(&self, table: &str) -> Result<()> {
-        let query = format!("DROP TABLE IF EXISTS `{}`", table);
+        let escaped_table = Self::escape_table_name(table)?;
+        let query = format!("DROP TABLE IF EXISTS {}", escaped_table);
         self.execute(&query)
     }
 
     pub fn get_foreign_keys(&self, table: &str) -> Result<Vec<ForeignKey>> {
+        Self::validate_table_name(table)?;
         let mut conn = self.get_conn()?;
 
-        let query = format!(
-            "SELECT 
+        let query = "SELECT 
                 CONSTRAINT_NAME,
                 COLUMN_NAME,
                 REFERENCED_TABLE_NAME,
                 REFERENCED_COLUMN_NAME
              FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
-             WHERE TABLE_SCHEMA = '{}' 
-             AND TABLE_NAME = '{}'
-             AND REFERENCED_TABLE_NAME IS NOT NULL",
-            self.config.dbname, table
-        );
+             WHERE TABLE_SCHEMA = ?
+             AND TABLE_NAME = ?
+             AND REFERENCED_TABLE_NAME IS NOT NULL";
 
-        let results: Vec<(String, String, String, String)> =
-            conn.query(query).map_err(ReplicoopError::from)?;
+        let results: Vec<(String, String, String, String)> = conn
+            .exec(query, (&self.config.dbname, table))
+            .map_err(ReplicoopError::from)?;
 
         Ok(results
             .into_iter()
@@ -117,8 +154,9 @@ impl DatabaseManager {
     }
 
     pub fn get_table_row_count(&self, table: &str) -> Result<u64> {
+        let escaped_table = Self::escape_table_name(table)?;
         let mut conn = self.get_conn()?;
-        let query = format!("SELECT COUNT(*) as count FROM `{}`", table);
+        let query = format!("SELECT COUNT(*) as count FROM {}", escaped_table);
 
         let result: Option<u64> = conn.query_first(query).map_err(ReplicoopError::from)?;
 
@@ -126,7 +164,8 @@ impl DatabaseManager {
     }
 
     pub fn copy_table_data(&self, source_conn: &mut PooledConn, table: &str) -> Result<u64> {
-        let query = format!("SELECT * FROM `{}`", table);
+        let escaped_table = Self::escape_table_name(table)?;
+        let query = format!("SELECT * FROM {}", escaped_table);
 
         let mut source_rows: Vec<mysql::Row> =
             source_conn.query(query).map_err(ReplicoopError::from)?;
@@ -143,7 +182,7 @@ impl DatabaseManager {
             .collect::<Vec<_>>()
             .join(", ");
 
-        let insert_query = format!("INSERT INTO `{}` VALUES ({})", table, placeholders);
+        let insert_query = format!("INSERT INTO {} VALUES ({})", escaped_table, placeholders);
 
         let mut inserted = 0u64;
 
