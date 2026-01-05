@@ -3,3 +3,7 @@
 /logs/
 /backups/
 /core/__pycache__/
+
+# Added by cargo
+
+/target
